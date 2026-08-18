@@ -91,7 +91,7 @@ log_file_native="$(to_native_path "$environment" "$log_file")" || {
         echo "echo '✅ CI passou para a branch $branch — abrindo revisão de PR.'"
         # Plataforma/prompt configurável via AGENT_PR_REVIEW_PLATFORM_CMD
         # (default: Claude Code + skill review-pr) — ver lib.sh.
-        echo "$(render_platform_cmd_line "$pr_url")"
+        echo "$(render_platform_cmd_line "$pr_url" "$repo")"
       else
         echo "echo '✅ CI passou para a branch $branch, mas nenhuma PR foi encontrada ainda para invocar a revisão.'"
         echo "echo 'Abra a PR e rode a skill review-pr manualmente quando estiver pronta.'"

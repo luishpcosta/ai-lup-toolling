@@ -37,11 +37,11 @@ load_config_env() {
 #   - AGENT_PR_REVIEW_TERMINAL_CMD: programa+flags que roda o script final
 #     na janela (o terminal/shell em si).
 #   - AGENT_PR_REVIEW_PLATFORM_CMD: programa+prompt que invoca a plataforma
-#     agêntica no estado SUCCESS. Cada elemento pode conter o placeholder
-#     literal "{pr_url}", substituído em render_platform_cmd_line() pela URL
-#     real da PR — permite usar Claude Code, Devin CLI ou qualquer outra
-#     ferramenta de linha de comando, desde que o usuário configure o
-#     comando real dela.
+#     agêntica no estado SUCCESS. Cada elemento pode conter os placeholders
+#     literais "{pr_url}" e "{repo}", substituídos em render_platform_cmd_line()
+#     pela URL real da PR e por "owner/repo" — permite usar Claude Code, Devin
+#     CLI ou qualquer outra ferramenta de linha de comando, desde que o
+#     usuário configure o comando real dela.
 AGENT_PR_REVIEW_TERMINAL_CMD=()
 AGENT_PR_REVIEW_PLATFORM_CMD=()
 
@@ -135,14 +135,16 @@ is_git_push_command() {
 
 # Monta a linha de comando final (já shell-quotada com segurança) que invoca
 # a plataforma agêntica configurada em AGENT_PR_REVIEW_PLATFORM_CMD,
-# substituindo o placeholder "{pr_url}" pela URL real recebida. Sempre
-# prefixada com MSYS_NO_PATHCONV=1 — evita o bug de path-conversion do MSYS
-# em argumentos que começam com "/" (ex.: "/review-pr").
+# substituindo os placeholders "{pr_url}" e "{repo}" pelos valores reais
+# recebidos. Sempre prefixada com MSYS_NO_PATHCONV=1 — evita o bug de
+# path-conversion do MSYS em argumentos que começam com "/" (ex.: "/review-pr").
 render_platform_cmd_line() {
-  local pr_url="$1"
+  local pr_url="$1" repo="${2:-}"
   local element line="MSYS_NO_PATHCONV=1"
   for element in "${AGENT_PR_REVIEW_PLATFORM_CMD[@]}"; do
-    line+=" $(printf '%q' "${element//\{pr_url\}/$pr_url}")"
+    element="${element//\{pr_url\}/$pr_url}"
+    element="${element//\{repo\}/$repo}"
+    line+=" $(printf '%q' "$element")"
   done
   printf '%s' "$line"
 }

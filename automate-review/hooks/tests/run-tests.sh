@@ -109,6 +109,16 @@ assert_eq "render_platform_cmd_line: funciona com outro comando configurado (ex.
   "MSYS_NO_PATHCONV=1 devin run revisa\\ a\\ PR\\ https://x/pull/2" \
   "$(render_platform_cmd_line 'https://x/pull/2')"
 
+AGENT_PR_REVIEW_PLATFORM_CMD=(claude '/review-pr revisa {pr_url} do repo {repo} por favor')
+assert_eq "render_platform_cmd_line: substitui {repo} além de {pr_url}" \
+  "MSYS_NO_PATHCONV=1 claude /review-pr\\ revisa\\ https://github.com/x/y/pull/1\\ do\\ repo\\ x/y\\ por\\ favor" \
+  "$(render_platform_cmd_line 'https://github.com/x/y/pull/1' 'x/y')"
+
+AGENT_PR_REVIEW_PLATFORM_CMD=(claude '/review-pr revisa {pr_url} por favor')
+assert_eq "render_platform_cmd_line: {repo} ausente (2º arg omitido) vira string vazia, sem quebrar {pr_url}" \
+  "MSYS_NO_PATHCONV=1 claude /review-pr\\ revisa\\ https://github.com/x/y/pull/1\\ por\\ favor" \
+  "$(render_platform_cmd_line 'https://github.com/x/y/pull/1')"
+
 AGENT_PR_REVIEW_PLATFORM_CMD=()
 
 # --- classify_state ---

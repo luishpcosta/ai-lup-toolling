@@ -159,16 +159,20 @@ problema real até agora.
 ### Trocar a plataforma agêntica (`AGENT_PR_REVIEW_PLATFORM_CMD`)
 
 Mesma ideia do terminal, agora para qual plataforma/skill é invocada quando a CI passa e a PR é
-encontrada. Também um **array bash**; cada elemento pode conter o placeholder literal `{pr_url}`,
-substituído pela URL real da PR na hora de montar o comando final:
+encontrada. Também um **array bash**; cada elemento pode conter os placeholders literais `{pr_url}`
+(substituído pela URL real da PR) e `{repo}` (substituído por `owner/repo`) na hora de montar o
+comando final:
 
 ```bash
 # default: Claude Code + skill review-pr
 AGENT_PR_REVIEW_PLATFORM_CMD=(claude '/review-pr faça revisão da pr aberta em {pr_url} e submeta os comentarios e relatório da validação')
 
+# exemplo usando também {repo}
+AGENT_PR_REVIEW_PLATFORM_CMD=(claude '/review-pr faça revisão da pr aberta em {pr_url} do repositório {repo} e submeta os comentarios e relatório da validação')
+
 # exemplo para Devin CLI — "devin -p" confirmado em docs.devin.ai/pt-BR/cli/essential-commands
 # (modo single-turn: imprime a resposta e sai). Não há subcomando dedicado de review documentado.
-# AGENT_PR_REVIEW_PLATFORM_CMD=(devin -p "revise a PR aberta em {pr_url} e submeta os comentários e relatório da validação")
+# AGENT_PR_REVIEW_PLATFORM_CMD=(devin -p "revise a PR aberta em {pr_url} do repositório {repo} e submeta os comentários e relatório da validação")
 ```
 
 A linha final é sempre prefixada com `MSYS_NO_PATHCONV=1` (evita o Git Bash converter argumentos que
