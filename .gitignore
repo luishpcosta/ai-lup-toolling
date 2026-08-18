@@ -1,0 +1,7 @@
+# Configurações locais/pessoais do Claude Code — não fazem parte do repositório
+.claude/settings.local.json
+**/.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+*.swp

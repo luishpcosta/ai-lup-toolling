@@ -1,0 +1,29 @@
+diff --git a/src/app/cart/cart-summary.component.ts b/src/app/cart/cart-summary.component.ts
+index 1111111..2222222 100644
+--- a/src/app/cart/cart-summary.component.ts
++++ b/src/app/cart/cart-summary.component.ts
+@@ -1,4 +1,5 @@
+-import { Component, Input } from '@angular/core';
++import { Component, Input, effect, signal } from '@angular/core';
+
+ @Component({
+   selector: 'app-cart-summary',
+@@ -8,9 +9,16 @@ export class CartSummaryComponent {
+   @Input() cart!: Cart;
+
+-  itemCount = 0;
++  itemCount = signal(0);
++  total = signal(0);
++
++  constructor() {
++    effect(() => {
++      this.total.set(this.itemCount() * this.cart.unitPrice);
++    });
++  }
+
+   addItem() {
+-    this.itemCount++;
++    this.itemCount.set(this.itemCount() + 1);
++    this.cart.items.push({ id: Date.now() });
+   }
+ }

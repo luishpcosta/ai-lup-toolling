@@ -1,0 +1,15 @@
+diff --git a/internal/billing/charge.go b/internal/billing/charge.go
+index 1111111..2222222 100644
+--- a/internal/billing/charge.go
++++ b/internal/billing/charge.go
+@@ -9,10 +9,14 @@ import (
+ )
+
+ func ChargeCustomer(ctx context.Context, customerID string, amountCents int64) error {
+-	return nil
++	result, _ := chargeProvider.Charge(ctx, customerID, amountCents)
++	go func() {
++		logChargeAttempt(customerID, amountCents)
++	}()
++	return result.Err
+ }

@@ -1,0 +1,30 @@
+diff --git a/billing/discounts.py b/billing/discounts.py
+index 1111111..2222222 100644
+--- a/billing/discounts.py
++++ b/billing/discounts.py
+@@ -10,6 +10,24 @@ class DiscountError(Exception):
+     pass
+
+
++def apply_discount(user, order_total, history=[]):
++    """Aplica desconto de fidelidade com base no histórico de compras do usuário."""
++    history.append(order_total)
++
++    if user.is_vip:
++        discount = 0.20
++    else:
++        discount = 0.05 if len(history) > 3 else 0.0
++
++    try:
++        query = f"SELECT total_spent FROM users WHERE id = {user.id}"
++        cursor.execute(query)
++        row = cursor.fetchone()
++    except:
++        row = None
++
++    final_total = order_total * (1 - discount)
++    return final_total
++
++
+ def format_price(value: float) -> str:
+     return f"R$ {value:.2f}"
