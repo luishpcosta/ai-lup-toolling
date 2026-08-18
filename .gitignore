@@ -2,6 +2,17 @@
 .claude/settings.local.json
 **/.claude/settings.local.json
 
+# Artefatos de runtime do Claude Code na raiz do repo (não confundir com
+# automate-review/.claude/, que é código versionado da skill review-pr)
+/.claude/
+
 # OS / editor
 .DS_Store
 *.swp
+
+# Python
+__pycache__/
+*.pyc
+
+# Dados de runtime da automação de review de PR (por máquina, não código)
+automate-review/data/

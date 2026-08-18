@@ -107,6 +107,8 @@ script, ela vence sobre o arquivo (útil para um override pontual de teste).
 | `AGENT_PR_REVIEW_SKILL_PATH` | Pasta onde a janela final abre (esta pasta, por padrão) |
 | `AGENT_PR_REVIEW_TERMINAL_CMD` | Array com o programa + flags do terminal a abrir (ver abaixo) |
 | `AGENT_PR_REVIEW_PLATFORM_CMD` | Array com o programa + prompt da plataforma agêntica a invocar (ver abaixo) |
+| `AGENT_PR_REVIEW_MAX_PER_BRANCH` | Máximo de revisões automatizadas por (repositório, branch) — ver "Gate de revisões" abaixo |
+| `AGENT_PR_REVIEW_AUTOMERGE_REPOS` | Array de repositórios (`owner/repo`) com merge automático — ver "Merge automático" abaixo |
 
 ### Trocar o terminal (`AGENT_PR_REVIEW_TERMINAL_CMD`)
 
@@ -180,12 +182,67 @@ começam com `/`, como `/review-pr`, num caminho Windows — bug real encontrado
 elemento é escapado com segurança (`printf '%q'`) antes de virar texto no script gerado, então prompts
 com espaço, aspas ou caracteres especiais funcionam sem escaping manual no `config.env`.
 
+### Gate de revisões por branch (`AGENT_PR_REVIEW_MAX_PER_BRANCH`)
+
+Evita que uma branch que recebe muitos pushes seguidos dispare a mesma revisão automatizada
+repetidas vezes. Toda vez que a CI passa e uma revisão é de fato invocada (janela aberta,
+plataforma agêntica chamada), o poller grava uma linha em `data/reviews.db` (SQLite, via
+[`hooks/review-db.py`](hooks/review-db.py)) associada ao par (repositório, branch). Antes de abrir
+a janela, ele conta quantas invocações já existem para esse par — se o total já atingiu
+`AGENT_PR_REVIEW_MAX_PER_BRANCH` (default `3`), a revisão **não é aberta**: a automação só loga
+"Revisão não iniciada — excesso de PRs automatizados para esta branch (N/max)" (no log discreto da
+branch e no [trace log central](#trace-log-central-datatracelog)) e sai, sem consumir mais nenhum
+recurso.
+
+A contagem é **por (repositório, branch)** e **nunca reseta sozinha** — uma branch que atinge o
+limite fica bloqueada permanentemente até:
+- a branch mudar de nome (novo par = nova contagem zerada), ou
+- alguém apagar manualmente as linhas correspondentes em `data/reviews.db` (não há comando dedicado
+  pra isso ainda — é uma operação manual no SQLite).
+
+A checagem/gravação é **atômica** (usa `BEGIN IMMEDIATE` no SQLite) — dois pushes rápidos na mesma
+branch, ou dois pollers rodando em paralelo, não perdem contagem nem estouram o limite por
+condição de corrida. Se `python3` não estiver disponível no ambiente do poller, ou se
+`review-db.py` falhar por qualquer outro motivo, a automação segue **fail-open**: a revisão abre
+normalmente mesmo sem conseguir checar o gate, mas fica um aviso bem visível no log (`gate_check_error`).
+
+### Merge automático por repositório (`AGENT_PR_REVIEW_AUTOMERGE_REPOS`)
+
+Lista **opt-in** (vazia por padrão) de repositórios `owner/repo` em que, assim que a CI passa e uma
+PR é encontrada, a automação **pula a revisão automatizada inteiramente** — não abre janela, não
+invoca a plataforma agêntica, e não toca no gate acima (repositórios aqui são independentes dele).
+Em vez disso, direto no poller:
+
+1. Posta um comentário na PR explicando que o merge é automático por causa dessa configuração
+   (CI verde + revisão pulada por config).
+2. Roda `gh pr merge --merge` — merge commit **imediato**, **sem** `--auto`, ou seja, **sem
+   esperar** por requisitos adicionais de branch protection (aprovações obrigatórias, outros
+   checks). Essa é uma decisão deliberada e mais arriscada que o padrão do GitHub — só configure um
+   repositório aqui se tiver certeza de que não há proteção de branch que dependa de revisão humana.
+
+Cada etapa (comentário e merge) é logada separadamente (sucesso/falha) no log discreto da branch e
+no trace log central.
+
+### Trace log central (`data/trace.log`)
+
+Diferente do log discreto por branch (que vive dentro de cada repositório, em
+`.claude/logs/pr-review-<branch>.log`), o trace log é **um único arquivo por máquina**, em
+`data/trace.log` — registra cronologicamente os eventos de todos os repositórios/branches que essa
+automação processou: push detectado, automação desligada, estado final do polling, revisão
+invocada ou bloqueada pelo gate, merge automático disparado/concluído/falhado, comentário de
+auto-merge postado/falhado, erros no gate. Ele **complementa** o log por branch, não o substitui —
+útil pra auditar a automação inteira de uma vez, sem precisar visitar repo por repo.
+
+Tanto `data/reviews.db` quanto `data/trace.log` são dados de runtime da máquina, não código —
+ficam fora do controle de versão (ver `.gitignore` na raiz do repositório).
+
 ## Estrutura
 
 ```
 automate-review/
 ├── README.md                    ← este arquivo
 ├── config.env                   ← configuração, editável
+├── data/                        ← runtime (SQLite + trace.log), criada sob demanda, git-ignored
 ├── examples/
 │   ├── claude-settings.json     ← exemplo de hook para copiar num repositório (Claude Code)
 │   └── devin-hooks.json         ← exemplo de hook para copiar num repositório (Devin CLI)
@@ -195,11 +252,15 @@ automate-review/
     ├── post-push-review.sh      ← entrypoint do hook (gate rápido)
     ├── poll-and-review.sh       ← poller pesado, disparado em background
     ├── open-terminal.sh         ← abre a janela final
-    └── tests/run-tests.sh       ← suíte de testes (bash puro, sem framework)
+    ├── review-db.py             ← gate de revisões (SQLite) — contagem por (repo, branch)
+    └── tests/
+        ├── run-tests.sh         ← suíte de testes de lib.sh (bash puro, sem framework)
+        └── test_review_db.py    ← suíte de testes de review-db.py (unittest da stdlib)
 ```
 
 ## Testar
 
 ```bash
 bash hooks/tests/run-tests.sh
+python3 -m unittest hooks.tests.test_review_db -v
 ```

@@ -15,7 +15,8 @@ load_config_env() {
   [ -f "$config_file" ] || return 0
 
   local vars=(AGENT_PR_REVIEW_ENABLED AGENT_PR_REVIEW_POLL_INTERVAL_SEC
-    AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS AGENT_PR_REVIEW_SKILL_PATH)
+    AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS AGENT_PR_REVIEW_SKILL_PATH
+    AGENT_PR_REVIEW_MAX_PER_BRANCH)
   local var
   local -A prior=()
 
@@ -42,8 +43,12 @@ load_config_env() {
 #     pela URL real da PR e por "owner/repo" — permite usar Claude Code, Devin
 #     CLI ou qualquer outra ferramenta de linha de comando, desde que o
 #     usuário configure o comando real dela.
+#   - AGENT_PR_REVIEW_AUTOMERGE_REPOS: lista opt-in de "owner/repo" — ver
+#     is_automerge_repo() abaixo. Vazia por padrão (nenhum merge automático
+#     até ser configurado explicitamente).
 AGENT_PR_REVIEW_TERMINAL_CMD=()
 AGENT_PR_REVIEW_PLATFORM_CMD=()
+AGENT_PR_REVIEW_AUTOMERGE_REPOS=()
 
 # Auto-carrega automate-review/config.env (um nível acima desta pasta) sempre
 # que lib.sh é sourced, para qualquer script da automação receber a
@@ -133,6 +138,25 @@ is_git_push_command() {
   esac
 }
 
+# Confere se "$1" (owner/repo) está na lista opt-in AGENT_PR_REVIEW_AUTOMERGE_REPOS.
+# Repos nessa lista pulam a revisão automatizada inteiramente e vão direto pro
+# merge automático (ver poll-and-review.sh) — independentes do gate abaixo.
+is_automerge_repo() {
+  local repo="$1" candidate
+  for candidate in "${AGENT_PR_REVIEW_AUTOMERGE_REPOS[@]}"; do
+    [ "$candidate" = "$repo" ] && return 0
+  done
+  return 1
+}
+
+# Formata uma linha do trace log central — pura, testável sem tocar o
+# filesystem (a escrita de fato é feita por trace_log() abaixo).
+# Args: timestamp_iso repo branch event [detail]
+format_trace_line() {
+  local ts="$1" repo="$2" branch="$3" event="$4" detail="${5:-}"
+  printf '[%s] repo=%s branch=%s event=%s%s\n' "$ts" "$repo" "$branch" "$event" "${detail:+ - $detail}"
+}
+
 # Monta a linha de comando final (já shell-quotada com segurança) que invoca
 # a plataforma agêntica configurada em AGENT_PR_REVIEW_PLATFORM_CMD,
 # substituindo os placeholders "{pr_url}" e "{repo}" pelos valores reais
@@ -177,16 +201,44 @@ classify_state() {
 }
 
 # Lê a configuração de env vars (com defaults) e imprime, em ordem:
-# enabled interval_sec max_attempts skill_path
+# enabled interval_sec max_attempts skill_path max_per_branch
 resolve_config() {
   local enabled="${AGENT_PR_REVIEW_ENABLED:-false}"
   local interval="${AGENT_PR_REVIEW_POLL_INTERVAL_SEC:-30}"
   local max_attempts="${AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS:-20}"
   local skill_path="${AGENT_PR_REVIEW_SKILL_PATH:-$HOME/development/tools/automate-review}"
-  echo "$enabled" "$interval" "$max_attempts" "$skill_path"
+  local max_per_branch="${AGENT_PR_REVIEW_MAX_PER_BRANCH:-3}"
+  echo "$enabled" "$interval" "$max_attempts" "$skill_path" "$max_per_branch"
 }
 
 # true (exit 0) se a automação está habilitada, false caso contrário.
 is_automation_enabled() {
   [ "${AGENT_PR_REVIEW_ENABLED:-false}" = "true" ]
+}
+
+# Pasta de dados de runtime (SQLite do gate + trace log central), compartilhada
+# por máquina — dentro de automate-review/, um nível acima de hooks/. Criada
+# sob demanda, não versionada (ver .gitignore na raiz do repo).
+_data_dir() {
+  local dir
+  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/data"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "$dir"
+}
+
+# Caminho do banco SQLite do gate de revisões (review-db.py).
+review_db_path() {
+  printf '%s/reviews.db' "$(_data_dir)"
+}
+
+# Caminho do trace log central (nível de máquina, todos os repos/branches).
+trace_log_path() {
+  printf '%s/trace.log' "$(_data_dir)"
+}
+
+# Grava uma linha no trace log central. Args: repo branch event [detail]
+# Melhor esforço — nunca falha o chamador (>/dev/null || true), o trace log é
+# um extra, não algo que deva travar a automação se a escrita falhar.
+trace_log() {
+  format_trace_line "$(date -Iseconds)" "$1" "$2" "$3" "${4:-}" >> "$(trace_log_path)" 2>/dev/null || true
 }

@@ -50,10 +50,17 @@ log_dir="$cwd/.claude/logs"
 mkdir -p "$log_dir" 2>/dev/null || true
 discreet_log="$log_dir/pr-review-${feature_name_safe}.log"
 
+# "repo" (owner/repo) ainda não foi resolvido de forma autoritativa aqui —
+# isso só acontece via "gh repo view" dentro de poll-and-review.sh. Fica em
+# branco nos dois eventos deste script (não vale adicionar mais uma fonte de
+# parsing do remote só pra rotular esses dois eventos iniciais).
+trace_log "" "$branch" "push_detected" "cwd=$cwd"
+
 if ! is_automation_enabled; then
   # Desligado por padrão: log discreto em arquivo, nada visível na sessão.
   printf '[%s] push detectado em %s — automação desligada (AGENT_PR_REVIEW_ENABLED != true)\n' \
     "$(date -Iseconds)" "$branch" >> "$discreet_log" 2>/dev/null || true
+  trace_log "" "$branch" "automation_disabled"
   exit 0
 fi
 

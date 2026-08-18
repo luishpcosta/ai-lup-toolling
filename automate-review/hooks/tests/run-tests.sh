@@ -188,14 +188,71 @@ AGENT_PR_REVIEW_TERMINAL_CMD=()
 
 # --- resolve_config (defaults) ---
 
-unset AGENT_PR_REVIEW_ENABLED AGENT_PR_REVIEW_POLL_INTERVAL_SEC AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS AGENT_PR_REVIEW_SKILL_PATH
+unset AGENT_PR_REVIEW_ENABLED AGENT_PR_REVIEW_POLL_INTERVAL_SEC AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS AGENT_PR_REVIEW_SKILL_PATH AGENT_PR_REVIEW_MAX_PER_BRANCH
 assert_eq "resolve_config: default desligado" \
-  "false 30 20 $HOME/development/tools/automate-review" "$(resolve_config)"
+  "false 30 20 $HOME/development/tools/automate-review 3" "$(resolve_config)"
 
 AGENT_PR_REVIEW_ENABLED=true
 assert_eq "is_automation_enabled: true quando env var é 'true'" "0" "$(is_automation_enabled; echo $?)"
 unset AGENT_PR_REVIEW_ENABLED
 assert_eq "is_automation_enabled: false por default" "1" "$(is_automation_enabled; echo $?)"
+
+# --- is_automerge_repo ---
+
+AGENT_PR_REVIEW_AUTOMERGE_REPOS=(org/repo-a org/repo-b)
+if is_automerge_repo "org/repo-a"; then r=0; else r=1; fi
+assert_eq "is_automerge_repo aceita repo presente na lista" "0" "$r"
+
+if is_automerge_repo "org/repo-c"; then r=0; else r=1; fi
+assert_eq "is_automerge_repo rejeita repo ausente da lista" "1" "$r"
+
+AGENT_PR_REVIEW_AUTOMERGE_REPOS=()
+if is_automerge_repo "org/repo-a"; then r=0; else r=1; fi
+assert_eq "is_automerge_repo rejeita tudo com lista vazia (default)" "1" "$r"
+
+# --- format_trace_line ---
+
+assert_eq "format_trace_line: com detail" \
+  "[2026-01-01T00:00:00-03:00] repo=org/repo branch=feature/x event=review_invoked - count=1 max=3" \
+  "$(format_trace_line "2026-01-01T00:00:00-03:00" "org/repo" "feature/x" "review_invoked" "count=1 max=3")"
+
+assert_eq "format_trace_line: sem detail (sem ' - ' sobrando)" \
+  "[2026-01-01T00:00:00-03:00] repo= branch=feature/x event=push_detected" \
+  "$(format_trace_line "2026-01-01T00:00:00-03:00" "" "feature/x" "push_detected")"
+
+# --- AGENT_PR_REVIEW_MAX_PER_BRANCH (precedência via load_config_env) ---
+
+_tmp_config3="$(mktemp)"
+cat > "$_tmp_config3" <<'EOF'
+AGENT_PR_REVIEW_MAX_PER_BRANCH=7
+EOF
+unset AGENT_PR_REVIEW_MAX_PER_BRANCH
+load_config_env "$_tmp_config3"
+assert_eq "MAX_PER_BRANCH: preenchido a partir do config.env quando ausente no ambiente" \
+  "7" "$AGENT_PR_REVIEW_MAX_PER_BRANCH"
+
+unset AGENT_PR_REVIEW_MAX_PER_BRANCH
+AGENT_PR_REVIEW_MAX_PER_BRANCH=1
+load_config_env "$_tmp_config3"
+assert_eq "MAX_PER_BRANCH: variável de ambiente já definida vence sobre o arquivo" \
+  "1" "$AGENT_PR_REVIEW_MAX_PER_BRANCH"
+rm -f "$_tmp_config3"
+unset AGENT_PR_REVIEW_MAX_PER_BRANCH
+
+# --- AGENT_PR_REVIEW_AUTOMERGE_REPOS (override via config.env) ---
+
+assert_eq "AUTOMERGE_REPOS: default vazio" "0" "${#AGENT_PR_REVIEW_AUTOMERGE_REPOS[@]}"
+
+_tmp_config4="$(mktemp)"
+cat > "$_tmp_config4" <<'EOF'
+AGENT_PR_REVIEW_AUTOMERGE_REPOS=(org/repo-a org/repo-b)
+EOF
+AGENT_PR_REVIEW_AUTOMERGE_REPOS=()
+load_config_env "$_tmp_config4"
+assert_eq "AUTOMERGE_REPOS: config.env consegue definir a lista" \
+  "2 org/repo-a org/repo-b" "${#AGENT_PR_REVIEW_AUTOMERGE_REPOS[@]} ${AGENT_PR_REVIEW_AUTOMERGE_REPOS[*]}"
+rm -f "$_tmp_config4"
+AGENT_PR_REVIEW_AUTOMERGE_REPOS=()
 
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."

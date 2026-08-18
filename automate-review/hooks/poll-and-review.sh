@@ -20,7 +20,7 @@ log() {
 }
 
 # shellcheck disable=SC2046
-read -r _enabled interval_sec max_attempts skill_path <<< "$(resolve_config)"
+read -r _enabled interval_sec max_attempts skill_path max_per_branch <<< "$(resolve_config)"
 
 environment="$(detect_environment)"
 if [ "$environment" = "unknown" ]; then
@@ -62,9 +62,68 @@ while [ "$attempt" -lt "$max_attempts" ]; do
 done
 
 log "Polling encerrado com estado final: $state"
+trace_log "$repo" "$branch" "polling_finished" "estado=$state commit=$commit_sha"
 
 pr_url="$(cd "$cwd" && gh pr view "$branch" --json url -q .url 2>/dev/null || echo "")"
 checks_url="https://github.com/$repo/commit/$commit_sha/checks"
+
+# Bifurcação nova: repos de auto-merge pulam a revisão inteiramente (e o
+# gate); os demais passam pelo gate de quantidade de revisões por branch
+# antes de abrir a janela. Roda aqui — dentro do poller, onde "gh" já está
+# autenticado/resolvido — nunca dentro do final_script (Git Bash nativo do
+# Windows, onde python3 pode nem estar no PATH).
+if [ "$state" = "success" ] && [ -n "$pr_url" ]; then
+  if is_automerge_repo "$repo"; then
+    log "Repositório $repo configurado para auto-merge — pulando revisão automatizada."
+    trace_log "$repo" "$branch" "automerge_triggered" "pr=$pr_url"
+
+    comment_body="A verificação de CI foi concluída com sucesso para esta pull request. Este repositório está configurado para merge automático (AGENT_PR_REVIEW_AUTOMERGE_REPOS), então a revisão automatizada por agente foi propositalmente pulada e o merge será realizado agora, sem intervenção manual."
+
+    if (cd "$cwd" && gh pr comment "$pr_url" --body "$comment_body") >>"$log_file" 2>&1; then
+      log "Comentário de auto-merge postado na PR."
+      trace_log "$repo" "$branch" "automerge_comment_posted" "pr=$pr_url"
+    else
+      log "ERRO: falha ao postar comentário de auto-merge na PR."
+      trace_log "$repo" "$branch" "automerge_comment_failed" "pr=$pr_url"
+    fi
+
+    if (cd "$cwd" && gh pr merge "$pr_url" --merge) >>"$log_file" 2>&1; then
+      log "Merge automático concluído."
+      trace_log "$repo" "$branch" "automerge_succeeded" "pr=$pr_url"
+    else
+      log "ERRO: merge automático falhou."
+      trace_log "$repo" "$branch" "automerge_failed" "pr=$pr_url"
+    fi
+    exit 0
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "AVISO: python3 não encontrado neste ambiente ($environment) — gate de revisões desabilitado, prosseguindo sem checar/gravar contagem."
+    trace_log "$repo" "$branch" "gate_check_error" "motivo=python3_ausente pr=$pr_url"
+    # fail-open: cai direto no fluxo normal de abertura de janela abaixo.
+  else
+    gate_output="$(python3 "$SCRIPT_DIR/review-db.py" check-and-increment \
+      --db-path "$(review_db_path)" --repo "$repo" --branch "$branch" \
+      --max "$max_per_branch" --commit-sha "$commit_sha" --pr-url "$pr_url" \
+      2>>"$log_file")"
+    gate_status=$?
+
+    if [ "$gate_status" -eq 2 ]; then
+      read -r _ gate_count gate_max <<< "$gate_output"
+      log "Revisão não iniciada — excesso de PRs automatizados para esta branch ($gate_count/$gate_max)."
+      trace_log "$repo" "$branch" "review_blocked_by_gate" "count=$gate_count max=$gate_max pr=$pr_url"
+      exit 0
+    elif [ "$gate_status" -ne 0 ]; then
+      log "ERRO: falha ao consultar/gravar o contador de revisões — prosseguindo mesmo assim (fail-open)."
+      trace_log "$repo" "$branch" "gate_check_error" "pr=$pr_url"
+      # fail-open, mesma decisão do caso "python3 ausente" acima
+    else
+      read -r _ gate_count_after gate_max <<< "$gate_output"
+      log "Revisão autorizada pelo gate ($gate_count_after/$gate_max)."
+      trace_log "$repo" "$branch" "review_invoked" "count=$gate_count_after max=$gate_max pr=$pr_url"
+    fi
+  fi
+fi
 
 final_script="$(dirname "$log_file")/.pr-review-final-${feature_name//\//-}.sh"
 
