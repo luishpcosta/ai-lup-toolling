@@ -128,11 +128,44 @@ render_source_file() {
     || die "não consegui reescrever o caminho de $src para '$TOOLS_ROOT' sem quebrar o JSON — instale manualmente."
 }
 
-# Os hooks só rodam se tiverem bit de execução; um checkout via .zip perde
-# esse bit. Best-effort, nunca fatal.
+# Lista os scripts registrados como hook dentro de um config JSON.
+# Args: json_file
+list_hook_commands() {
+  if [ "$MERGE_ENGINE" = "jq" ]; then
+    jq -r '.. | objects | select(has("command")) | .command' "$1" 2>/dev/null
+  else
+    python3 -c '
+import json, sys
+
+def walk(node):
+    if isinstance(node, dict):
+        value = node.get("command")
+        if isinstance(value, str):
+            print(value)
+        for child in node.values():
+            walk(child)
+    elif isinstance(node, list):
+        for child in node:
+            walk(child)
+
+with open(sys.argv[1]) as f:
+    walk(json.load(f))
+' "$1" 2>/dev/null
+  fi
+}
+
+# Um hook sem bit de execução falha em silêncio, e um checkout via .zip perde
+# esse bit. Marca só os scripts que o config realmente registra — lib.sh é
+# sourced, não executado, e não deve virar executável.
+# Args: rendered_source_file
 ensure_hooks_executable() {
-  local tool_dir="$1"
-  find "$tool_dir/hooks" -name '*.sh' -type f -exec chmod +x {} + 2>/dev/null || true
+  local cmd
+  while IFS= read -r cmd; do
+    [ -z "$cmd" ] && continue
+    cmd="${cmd/#\$HOME/$HOME}"
+    [ -f "$cmd" ] && chmod +x "$cmd" 2>/dev/null
+  done < <(list_hook_commands "$1")
+  return 0
 }
 
 # Args: file
@@ -267,7 +300,7 @@ install_one() {
 
   mkdir -p "$(dirname "$target_file")" 2>/dev/null || true
   ensure_json_file "$target_file"
-  ensure_hooks_executable "$tool_dir"
+  ensure_hooks_executable "$source_file"
 
   # Só faz backup + escreve se algo realmente muda — rodar de novo sem
   # mudança nenhuma não deve acumular backup.
