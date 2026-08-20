@@ -47,6 +47,14 @@ assert_eq "config_declares_mcp_servers: presente -> match" \
   "0" "$(config_declares_mcp_servers '{"mcpServers":{"foo":{}}}'; echo $?)"
 assert_eq "config_declares_mcp_servers: ausente -> sem match" \
   "1" "$(config_declares_mcp_servers '{"permissions":{}}'; echo $?)"
+assert_eq "config_declares_mcp_servers: objeto vazio -> sem match (não espera à toa)" \
+  "1" "$(config_declares_mcp_servers '{"mcpServers":{}}'; echo $?)"
+assert_eq "config_declares_mcp_servers: JSON indentado -> match" \
+  "0" "$(config_declares_mcp_servers '{
+  "mcpServers": {
+    "foo": {}
+  }
+}'; echo $?)"
 assert_eq "config_declares_mcp_servers: conteúdo vazio -> sem match" \
   "1" "$(config_declares_mcp_servers ''; echo $?)"
 
@@ -97,6 +105,58 @@ trace_log "test-probe" "ACTION" "$_trace_marker"
 assert_eq "trace_log: grava uma linha em data/trace.log" \
   "1" "$(grep -c "$_trace_marker" "$(trace_log_path)" 2>/dev/null || echo 0)"
 sed -i "/$_trace_marker/d" "$(trace_log_path)" 2>/dev/null || true
+
+# --- warmup_seconds: valor inválido ------------------------------------------
+
+assert_eq "warmup_seconds: valor não-numérico cai no default (sleep não quebra)" \
+  "3" "$(SESSION_LIFECYCLE_WARMUP_SECONDS=abc warmup_seconds)"
+
+# --- git_operation_in_progress ----------------------------------------------
+# Commitar no meio de um merge/rebase conclui a operação errada.
+
+_fake_git_dir="$(mktemp -d)"
+assert_eq "git_operation_in_progress: repositório limpo -> vazio" \
+  "" "$(git_operation_in_progress "$_fake_git_dir")"
+touch "$_fake_git_dir/MERGE_HEAD"
+assert_eq "git_operation_in_progress: MERGE_HEAD -> merge" \
+  "merge" "$(git_operation_in_progress "$_fake_git_dir")"
+rm -f "$_fake_git_dir/MERGE_HEAD"; mkdir -p "$_fake_git_dir/rebase-merge"
+assert_eq "git_operation_in_progress: rebase-merge -> rebase" \
+  "rebase" "$(git_operation_in_progress "$_fake_git_dir")"
+rm -rf "$_fake_git_dir"
+
+# --- compact-checkpoint end-to-end -------------------------------------------
+
+_ck="$SCRIPT_DIR/../scripts/compact-checkpoint.sh"
+_ck_trace="$(mktemp -d)/trace.log"
+
+_repo="$(mktemp -d)"
+(
+  cd "$_repo" || exit 1
+  git init -q -b feature/teste .
+  echo conteudo > arquivo.txt
+  SESSION_LIFECYCLE_TRACE_LOG_PATH="$_ck_trace" bash "$_ck" >/dev/null 2>&1
+)
+assert_eq "checkpoint: cria o commit quando há mudanças" \
+  "1" "$(git -C "$_repo" rev-list --count HEAD 2>/dev/null || echo 0)"
+assert_eq "checkpoint: loga ACTION com o nome real da branch (não 'HEAD')" \
+  "1" "$(grep -c 'decision=ACTION.*feature/teste' "$_ck_trace")"
+rm -rf "$_repo"
+
+# Commit impossível (índice travado): não pode reportar sucesso.
+_repo_travado="$(mktemp -d)"
+(
+  cd "$_repo_travado" || exit 1
+  git init -q .
+  echo conteudo > arquivo.txt
+  touch .git/index.lock
+  SESSION_LIFECYCLE_TRACE_LOG_PATH="$_ck_trace" bash "$_ck" >/dev/null 2>&1
+)
+assert_eq "checkpoint: commit que falha não vira commit" \
+  "0" "$(git -C "$_repo_travado" rev-list --count HEAD 2>/dev/null || echo 0)"
+assert_eq "checkpoint: commit que falha é logado como FAILED, não ACTION" \
+  "1" "$(grep -c 'decision=FAILED' "$_ck_trace")"
+rm -rf "$_repo_travado" "$(dirname "$_ck_trace")"
 
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."
