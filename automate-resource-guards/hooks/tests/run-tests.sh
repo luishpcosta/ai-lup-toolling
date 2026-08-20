@@ -112,6 +112,65 @@ assert_eq "trace_log: grava uma linha em data/trace.log" \
   "1" "$(grep -c "$_trace_marker" "$(trace_log_path)" 2>/dev/null || echo 0)"
 sed -i "/$_trace_marker/d" "$(trace_log_path)" 2>/dev/null || true
 
+
+# --- extração JSON: aspas escapadas -----------------------------------------
+
+assert_eq "extract_json_string_field: não trunca em aspas escapadas" \
+  'Agent "x"' \
+  "$(extract_json_string_field '{"tool_name":"Agent \"x\""}' tool_name)"
+
+assert_eq "json_unescape: \\\" \\\\ e \\/ numa passada só" \
+  'a"b\c/d' "$(json_unescape 'a\"b\\c\/d')"
+
+# --- _positive_int_or_default -----------------------------------------------
+# Valor inválido no config.env viraria erro de aritmética em todo spawn.
+
+assert_eq "max_subagents: valor não-numérico cai no default" \
+  "5" "$(RESOURCE_GUARD_MAX_SUBAGENTS=abc resource_guard_max_subagents)"
+assert_eq "max_subagents: zero cai no default (bloquearia tudo por engano)" \
+  "5" "$(RESOURCE_GUARD_MAX_SUBAGENTS=0 resource_guard_max_subagents)"
+assert_eq "ttl_seconds: valor inválido cai no default" \
+  "1800" "$(RESOURCE_GUARD_TTL_SECONDS=-1 resource_guard_ttl_seconds)"
+
+# --- acquire_lock / release_lock --------------------------------------------
+
+_lock_dir="$(mktemp -d)/lock"
+assert_eq "acquire_lock: pega o lock livre" "0" "$(acquire_lock "$_lock_dir" 1 60; echo $?)"
+mkdir -p "$_lock_dir"
+assert_eq "acquire_lock: desiste no timeout se o lock está tomado" \
+  "1" "$(acquire_lock "$_lock_dir" 1 60; echo $?)"
+assert_eq "acquire_lock: recupera lock abandonado (mais velho que stale)" \
+  "0" "$(acquire_lock "$_lock_dir" 2 0; echo $?)"
+release_lock "$_lock_dir"
+assert_eq "release_lock: remove o diretório de lock" \
+  "1" "$([ -d "$_lock_dir" ]; echo $?)"
+
+# --- sanitize_trace_detail --------------------------------------------------
+
+assert_eq "sanitize_trace_detail: achata quebra de linha (1 evento = 1 linha)" \
+  "a b" "$(sanitize_trace_detail "a
+b")"
+
+# --- guard end-to-end: limite respeitado ------------------------------------
+
+_guard="$SCRIPT_DIR/../guards/subagent-budget-guard.sh"
+_tracker="$(mktemp -d)/active-agents"
+
+_spawn() {
+  echo '{"tool_name":"Agent"}' \
+    | RESOURCE_GUARD_TRACKER_PATH="$_tracker" RESOURCE_GUARD_MAX_SUBAGENTS=2 "$_guard" >/dev/null 2>&1
+  echo $?
+}
+
+assert_eq "guard: 1º spawn passa"  "0" "$(_spawn)"
+assert_eq "guard: 2º spawn passa"  "0" "$(_spawn)"
+assert_eq "guard: 3º spawn bloqueia (exit 2)" "2" "$(_spawn)"
+assert_eq "guard: tracker tem exatamente 2 entradas" "2" "$(grep -c . "$_tracker")"
+
+assert_eq "guard: ferramenta diferente de Agent é ignorada" \
+  "0" "$(echo '{"tool_name":"Bash"}' | RESOURCE_GUARD_TRACKER_PATH="$_tracker" RESOURCE_GUARD_MAX_SUBAGENTS=2 "$_guard" >/dev/null 2>&1; echo $?)"
+assert_eq "guard: tracker não cresceu com ferramenta ignorada" "2" "$(grep -c . "$_tracker")"
+rm -rf "$(dirname "$_tracker")"
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."
 [ "$fail" -eq 0 ]

@@ -105,19 +105,68 @@ to_native_path() {
   esac
 }
 
-# Extrai o valor de um campo string de um JSON via regex — fallback usado só
-# quando "jq" não está disponível (ex.: Git Bash puro do Windows, que não
-# bundla jq por padrão). Não entende aninhamento de verdade, só procura a
-# CHAVE em qualquer nível — suficiente pros payloads reais de hook (Claude
-# Code/Devin CLI), que não repetem nomes de campo como "cwd"/"command" em
-# níveis diferentes. Não desescapa `\"`/`\\` — melhor esforço, não substitui
-# um parser de JSON de verdade. Args: json_text field_name
+# Desfaz os escapes JSON que importam para um comando/caminho (\" \\ \/),
+# numa passada só — `\\"` vira `\"`, não `"` solto.
+json_unescape() {
+  printf '%s' "$1" | sed 's|\\\(["\\/]\)|\1|g'
+}
+
+# Extrai o valor de um campo string de um JSON via regex — última camada de
+# fallback, usada só quando nem "jq" nem "python3" estão disponíveis. Não
+# entende aninhamento de verdade, só procura a CHAVE em qualquer nível —
+# suficiente pros payloads reais de hook (Claude Code/Devin CLI), que não
+# repetem nomes de campo como "cwd"/"command" em níveis diferentes.
+# Args: json_text field_name
 extract_json_string_field() {
-  local json="$1" field="$2"
-  printf '%s' "$json" \
-    | grep -o "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
-    | head -1 \
-    | sed -E "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"/\1/"
+  local json="$1" field="$2" raw
+  raw="$(printf '%s' "$json" \
+    | grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\"(\\\\.|[^\"\\\\])*\"" \
+    | head -1)"
+  [ -z "$raw" ] && return 0
+  raw="${raw#*:}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw#\"}"
+  raw="${raw%\"}"
+  json_unescape "$raw"
+}
+
+# Lê um campo do payload do hook com o melhor parser disponível:
+# jq -> python3 -> regex. jq não vem no Git for Windows/MSYS2 e python3 quase
+# sempre vem, então a camada do meio evita cair na regex na prática.
+# Args: payload jq_filter python_expression
+_read_payload_field() {
+  local payload="$1" jq_filter="$2" py_expr="$3"
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$payload" | jq -r "$jq_filter" 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$payload" | python3 -c "
+import json, sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+value = $py_expr
+if isinstance(value, str):
+    sys.stdout.write(value)
+" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+# tool_input.command do payload do hook.
+read_tool_command() {
+  local payload="$1"
+  _read_payload_field "$payload" '.tool_input.command // empty' \
+    '(payload.get("tool_input") or {}).get("command")' \
+    || extract_json_string_field "$payload" "command"
+}
+
+# cwd do payload do hook.
+read_payload_cwd() {
+  local payload="$1"
+  _read_payload_field "$payload" '.cwd // empty' 'payload.get("cwd")' \
+    || extract_json_string_field "$payload" "cwd"
 }
 
 # Confere se o nome de branch recebido começa com "feature/".
@@ -147,6 +196,26 @@ is_automerge_repo() {
     [ "$candidate" = "$repo" ] && return 0
   done
   return 1
+}
+
+# Uma entrada do trace log é UMA linha: comando/erro multi-linha quebrava o
+# formato pra quem lê com grep/tail.
+sanitize_trace_detail() {
+  local detail="$1"
+  detail="$(printf '%s' "$detail" | tr '\n\r\t' '   ')"
+  if [ "${#detail}" -gt 500 ]; then
+    detail="${detail:0:500}…"
+  fi
+  printf '%s' "$detail"
+}
+
+# Emite uma linha do script final já escapada. Nome de branch e de
+# repositório entram nesse script e o git ACEITA aspas simples no nome da
+# branch (`feature/it's-broken`): interpolar direto dentro de '...' quebrava
+# o script gerado e permitia injetar comando pelo nome da branch.
+# Args: comando texto
+emit_script_line() {
+  printf '%s %q\n' "$1" "$2"
 }
 
 # Formata uma linha do trace log central — pura, testável sem tocar o
@@ -200,15 +269,36 @@ classify_state() {
   echo "pending"
 }
 
-# Lê a configuração de env vars (com defaults) e imprime, em ordem:
-# enabled interval_sec max_attempts skill_path max_per_branch
-resolve_config() {
-  local enabled="${AGENT_PR_REVIEW_ENABLED:-false}"
-  local interval="${AGENT_PR_REVIEW_POLL_INTERVAL_SEC:-30}"
-  local max_attempts="${AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS:-20}"
-  local skill_path="${AGENT_PR_REVIEW_SKILL_PATH:-$HOME/development/tools/automate-review}"
-  local max_per_branch="${AGENT_PR_REVIEW_MAX_PER_BRANCH:-3}"
-  echo "$enabled" "$interval" "$max_attempts" "$skill_path" "$max_per_branch"
+# Um getter por variável, em vez de uma linha só com tudo separado por
+# espaço: com `read a b c d e <<< "$(resolve_config)"` um AGENT_PR_REVIEW_SKILL_PATH
+# com espaço (ex.: "C:/Program Files/...") vazava para o campo seguinte e o
+# limite do gate virava texto — o que fazia review-db.py rejeitar --max e a
+# automação cair em fail-open sem gate nenhum.
+
+# Valor inteiro positivo ou o default (config inválido não pode virar erro
+# de aritmética/sleep no meio do polling). Args: value default
+_positive_int_or_default() {
+  case "${1:-}" in
+    ''|*[!0-9]*) printf '%s' "$2" ;;
+    0) printf '%s' "$2" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+review_poll_interval_sec() {
+  _positive_int_or_default "${AGENT_PR_REVIEW_POLL_INTERVAL_SEC:-}" 30
+}
+
+review_poll_max_attempts() {
+  _positive_int_or_default "${AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS:-}" 20
+}
+
+review_skill_path() {
+  printf '%s' "${AGENT_PR_REVIEW_SKILL_PATH:-$HOME/development/tools/automate-review}"
+}
+
+review_max_per_branch() {
+  _positive_int_or_default "${AGENT_PR_REVIEW_MAX_PER_BRANCH:-}" 3
 }
 
 # true (exit 0) se a automação está habilitada, false caso contrário.
@@ -248,5 +338,6 @@ trace_log_path() {
 # Melhor esforço — nunca falha o chamador (>/dev/null || true), o trace log é
 # um extra, não algo que deva travar a automação se a escrita falhar.
 trace_log() {
-  format_trace_line "$(date -Iseconds)" "$1" "$2" "$3" "${4:-}" >> "$(trace_log_path)" 2>/dev/null || true
+  format_trace_line "$(date -Iseconds)" "$1" "$2" "$3" "$(sanitize_trace_detail "${4:-}")" \
+    >> "$(trace_log_path)" 2>/dev/null || true
 }

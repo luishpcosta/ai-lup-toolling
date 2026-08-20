@@ -99,6 +99,75 @@ list_tools() {
   done
 }
 
+# Versão numerada, usada no modo interativo — o prompt pede número, então a
+# lista precisa mostrar número.
+list_tools_numbered() {
+  local idx=1 key
+  echo "Ferramentas disponíveis:"
+  for key in "${TOOL_KEYS[@]}"; do
+    printf '  %d) %-18s %s\n' "$idx" "$key" "${TOOL_DESC[$key]}"
+    idx=$((idx + 1))
+  done
+}
+
+# Os examples/*.json trazem o caminho padrão ($HOME/development/tools/...).
+# Se este checkout está em outro lugar, o hook instalado apontaria pra uma
+# pasta inexistente e nunca rodaria — sem nenhum erro visível.
+# Copia o example trocando esse caminho pelo caminho real deste checkout.
+# Args: source_file out_file
+render_source_file() {
+  local src="$1" out="$2" escaped
+  if [ "$TOOLS_ROOT" = "$HOME/development/tools" ]; then
+    cp "$src" "$out"
+    return 0
+  fi
+  # Escapa \ & | (delimitador) no lado de substituição do sed.
+  escaped="$(printf '%s' "$TOOLS_ROOT" | sed -e 's/[\\&|]/\\&/g')"
+  sed "s|\\\$HOME/development/tools|$escaped|g" "$src" > "$out"
+  is_valid_json "$out" \
+    || die "não consegui reescrever o caminho de $src para '$TOOLS_ROOT' sem quebrar o JSON — instale manualmente."
+}
+
+# Lista os scripts registrados como hook dentro de um config JSON.
+# Args: json_file
+list_hook_commands() {
+  if [ "$MERGE_ENGINE" = "jq" ]; then
+    jq -r '.. | objects | select(has("command")) | .command' "$1" 2>/dev/null
+  else
+    python3 -c '
+import json, sys
+
+def walk(node):
+    if isinstance(node, dict):
+        value = node.get("command")
+        if isinstance(value, str):
+            print(value)
+        for child in node.values():
+            walk(child)
+    elif isinstance(node, list):
+        for child in node:
+            walk(child)
+
+with open(sys.argv[1]) as f:
+    walk(json.load(f))
+' "$1" 2>/dev/null
+  fi
+}
+
+# Um hook sem bit de execução falha em silêncio, e um checkout via .zip perde
+# esse bit. Marca só os scripts que o config realmente registra — lib.sh é
+# sourced, não executado, e não deve virar executável.
+# Args: rendered_source_file
+ensure_hooks_executable() {
+  local cmd
+  while IFS= read -r cmd; do
+    [ -z "$cmd" ] && continue
+    cmd="${cmd/#\$HOME/$HOME}"
+    [ -f "$cmd" ] && chmod +x "$cmd" 2>/dev/null
+  done < <(list_hook_commands "$1")
+  return 0
+}
+
 # Args: file
 ensure_json_file() {
   local f="$1"
@@ -119,8 +188,11 @@ backup_file() {
 # Mescla o config de hooks de source_file DENTRO de target_file (escreve o
 # resultado em target_file), sem apagar nada que já exista (permissions,
 # autoMode, outros hooks manuais etc.) e sem duplicar entradas se rodar de
-# novo (dedup + ordena por JSON canônico do item — idêntico nas duas
-# engines). Despacha pra jq ou python3 conforme detect_merge_engine().
+# novo. Entradas que já existem são mantidas ONDE ESTÃO e as novas vão pro
+# fim da lista: o `unique` do jq usado antes ordenava o array inteiro por
+# JSON canônico e reordenava silenciosamente os hooks que o usuário já
+# tinha — e hook de PreToolUse roda na ordem em que está no arquivo.
+# Despacha pra jq ou python3 conforme detect_merge_engine().
 # Args: target_file source_file source_shape target_shape
 #   shape ∈ {flat, nested} — nested = eventos dentro de ".hooks"
 merge_hooks_json() {
@@ -130,13 +202,19 @@ merge_hooks_json() {
     local out; out="$(mktemp)"
     python3 "$TOOLS_ROOT/install_merge.py" "$target_file" "$source_file" "$source_shape" "$target_shape" "$out" \
       || { rm -f "$out"; die "falha ao mesclar $source_file em $target_file (python3)"; }
-    mv "$out" "$target_file"
+    cat "$out" > "$target_file"
+    rm -f "$out"
     return 0
   fi
 
-  local tmp src_expr
+  local tmp src_expr append_new
   tmp="$(mktemp)"
   [ "$source_shape" = "nested" ] && src_expr='$srcs[0].hooks' || src_expr='$srcs[0]'
+  # Acrescenta ao array do evento só o que ainda não está lá, preservando a
+  # ordem existente. `==` do jq compara objetos por chave, não por ordem de
+  # chave — mesma semântica do `not in` do install_merge.py.
+  append_new='reduce $src[$event][] as $item ((.[$event] // []);
+                if any(.[]; . == $item) then . else . + [$item] end)'
 
   if [ "$target_shape" = "nested" ]; then
     jq --slurpfile srcs "$source_file" "
@@ -144,7 +222,7 @@ merge_hooks_json() {
       | .hooks = (
           (.hooks // {}) as \$th
           | reduce (\$src | keys[]) as \$event (\$th;
-              .[\$event] = ((\$th[\$event] // []) + \$src[\$event] | unique)
+              .[\$event] = ( ${append_new} )
             )
         )
     " "$target_file" > "$tmp" || { rm -f "$tmp"; die "falha ao mesclar $source_file em $target_file (jq)"; }
@@ -152,11 +230,12 @@ merge_hooks_json() {
     jq --slurpfile srcs "$source_file" "
       (${src_expr}) as \$src
       | reduce (\$src | keys[]) as \$event (.;
-          .[\$event] = ((.[\$event] // []) + \$src[\$event] | unique)
+          .[\$event] = ( ${append_new} )
         )
     " "$target_file" > "$tmp" || { rm -f "$tmp"; die "falha ao mesclar $source_file em $target_file (jq)"; }
   fi
-  mv "$tmp" "$target_file"
+  cat "$tmp" > "$target_file"
+  rm -f "$tmp"
 }
 
 # Args: tool_key platform scope [repo_path]
@@ -188,6 +267,10 @@ install_one() {
 
   [ -f "$source_file" ] || die "$source_file não existe (ferramenta '$tool_key' sem exemplo pra '$platform')"
 
+  local rendered_source; rendered_source="$(mktemp)"
+  render_source_file "$source_file" "$rendered_source"
+  source_file="$rendered_source"
+
   local target_exists=false
   [ -f "$target_file" ] && target_exists=true
 
@@ -211,30 +294,39 @@ install_one() {
       echo "[dry-run] $target_file seria CRIADO (${TOOL_DIR[$tool_key]}, $platform):"
       sed 's/^/    /' "$tmp"
     fi
-    rm -f "$tmp"
+    rm -f "$tmp" "$rendered_source"
     return 0
   fi
 
   mkdir -p "$(dirname "$target_file")" 2>/dev/null || true
   ensure_json_file "$target_file"
+  ensure_hooks_executable "$source_file"
 
   # Só faz backup + escreve se algo realmente muda — rodar de novo sem
   # mudança nenhuma não deve acumular backup.
   local tmp; tmp="$(mktemp)"
   cp "$target_file" "$tmp"
   merge_hooks_json "$tmp" "$source_file" "$source_shape" "$target_shape"
+  local caveat="${TOOL_CAVEAT[${tool_key}:${platform}]:-}"
+
   if diff -q "$target_file" "$tmp" >/dev/null 2>&1; then
     echo "=    ${TOOL_DIR[$tool_key]} -> $target_file ($platform) — já instalado"
-    rm -f "$tmp"
+    rm -f "$tmp" "$rendered_source"
+    # O aviso vale a cada execução: reinstalar não muda o config, mas quem
+    # está lendo a saída continua precisando saber do caveat.
+    [ -n "$caveat" ] && echo "     atenção: $caveat"
     return 0
   fi
 
   backup_file "$target_file"
-  mv "$tmp" "$target_file"
+  # cat em vez de mv: mv trocaria o arquivo alvo pelo temporário do mktemp e
+  # levaria junto o modo 600 dele — um settings.json 644 virava 600.
+  cat "$tmp" > "$target_file"
+  rm -f "$tmp" "$rendered_source"
   echo "OK   ${TOOL_DIR[$tool_key]} -> $target_file ($platform)"
 
-  local caveat="${TOOL_CAVEAT[${tool_key}:${platform}]:-}"
   [ -n "$caveat" ] && echo "     atenção: $caveat"
+  return 0
 }
 
 # --- parsing de flags -----------------------------------------------------
@@ -249,12 +341,14 @@ for arg in "$@"; do
   case "$arg" in
     --help|-h) usage; exit 0 ;;
     --list) list_tools; exit 0 ;;
-    --dry-run) DRY_RUN=true; INTERACTIVE=false ;;
+    # --dry-run não desliga o modo interativo: "./install.sh --dry-run"
+    # sozinho tem que poder perguntar o que simular, não morrer pedindo flags.
+    --dry-run) DRY_RUN=true ;;
     --yes) ASSUME_YES=true ;;
     --tools=*) TOOLS_FLAG="${arg#--tools=}"; INTERACTIVE=false ;;
     --platform=*) PLATFORM_FLAG="${arg#--platform=}"; INTERACTIVE=false ;;
     --scope=*) SCOPE_FLAG="${arg#--scope=}"; INTERACTIVE=false ;;
-    --repo=*) REPO_FLAG="${arg#--repo=}" ;;
+    --repo=*) REPO_FLAG="${arg#--repo=}"; INTERACTIVE=false ;;
     *) die "flag desconhecida: $arg (veja --help)" ;;
   esac
 done
@@ -265,25 +359,38 @@ detect_merge_engine
 
 if [ "$INTERACTIVE" = "true" ] && [ -t 0 ]; then
   echo "=== Instalador de hooks — $(basename "$TOOLS_ROOT") ==="
+  [ "$DRY_RUN" = "true" ] && echo "(dry-run: nada será escrito)"
   echo
-  list_tools
+  # Numerada porque o prompt pede número — a lista sem número deixava a
+  # pergunta sem resposta possível.
+  list_tools_numbered
   echo "  a) todas"
   echo
-  read -rp "Quais instalar (números separados por vírgula, ou 'a')? " tools_choice
+  read -rp "Quais instalar (números ou nomes separados por vírgula, ou 'a')? " tools_choice
   if [ "$tools_choice" = "a" ]; then
     TOOLS_FLAG="all"
   else
     interactive_selected=()
-    IFS=',' read -ra nums <<< "$tools_choice"
-    for n in "${nums[@]}"; do
-      n="$(echo "$n" | tr -d '[:space:]')"
-      idx=1
-      for key in "${TOOL_KEYS[@]}"; do
-        [ "$idx" = "$n" ] && interactive_selected+=("$key")
-        idx=$((idx + 1))
-      done
+    IFS=',' read -ra choices <<< "$tools_choice"
+    for choice in "${choices[@]}"; do
+      choice="$(printf '%s' "$choice" | tr -d '[:space:]')"
+      [ -z "$choice" ] && continue
+      matched=""
+      # Aceita número da lista OU nome da ferramenta: quem digita "security"
+      # não deveria ser respondido com "nenhuma ferramenta válida".
+      if [ -n "${TOOL_DIR[$choice]:-}" ]; then
+        matched="$choice"
+      else
+        idx=1
+        for key in "${TOOL_KEYS[@]}"; do
+          [ "$idx" = "$choice" ] && matched="$key"
+          idx=$((idx + 1))
+        done
+      fi
+      [ -z "$matched" ] && die "opção inválida: '$choice' (use número da lista, nome da ferramenta ou 'a')"
+      interactive_selected+=("$matched")
     done
-    [ "${#interactive_selected[@]}" -eq 0 ] && die "nenhuma ferramenta válida escolhida"
+    [ "${#interactive_selected[@]}" -eq 0 ] && die "nenhuma ferramenta escolhida"
     TOOLS_FLAG="$(IFS=,; echo "${interactive_selected[*]}")"
   fi
 

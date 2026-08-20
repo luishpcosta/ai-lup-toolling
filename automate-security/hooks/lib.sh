@@ -3,101 +3,132 @@
 # segurança PreToolUse. Testes: hooks/tests/run-tests.sh.
 
 # --- stdin JSON -----------------------------------------------------------
+# Três camadas, da mais confiável para a menos: jq -> python3 -> regex. As
+# duas primeiras são parsers de verdade. A terceira é último recurso (Git
+# Bash sem jq e sem python3) e precisa entender \" e \\ dentro do valor: sem
+# isso o comando era truncado no primeiro \" e o guard deixava passar
+# (`echo \"x\" ; cat ~/.ssh/id_rsa` não era bloqueado).
 
-# Extrai um campo string de JSON via regex (fallback sem jq).
-# Args: json_text field_name
-extract_json_string_field() {
-  local json="$1" field="$2"
-  printf '%s' "$json" \
-    | grep -o "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
-    | head -1 \
-    | sed -E "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"/\1/"
+# Desfaz os escapes JSON que importam para o texto de um comando (\" \\ \/),
+# numa passada só — `\\"` vira `\"`, não `"` solto. \n/\t continuam
+# literais: nenhuma detecção depende de quebra de linha real.
+json_unescape() {
+  printf '%s' "$1" | sed 's|\\\(["\\/]\)|\1|g'
 }
 
-# tool_input.command do payload. jq quando disponível, fallback quando não.
+# Extrai um campo string de JSON via regex (última camada de fallback).
+# Procura a chave em qualquer nível — suficiente para os payloads reais de
+# hook, que não repetem "command" em níveis diferentes.
+# Args: json_text field_name
+extract_json_string_field() {
+  local json="$1" field="$2" raw
+  raw="$(printf '%s' "$json" \
+    | grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\"(\\\\.|[^\"\\\\])*\"" \
+    | head -1)"
+  [ -z "$raw" ] && return 0
+  raw="${raw#*:}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw#\"}"
+  raw="${raw%\"}"
+  json_unescape "$raw"
+}
+
+# tool_input.command do payload.
 read_tool_command() {
   local payload="$1"
   if command -v jq >/dev/null 2>&1; then
     printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$payload" | python3 -c 'import json, sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+value = (payload.get("tool_input") or {}).get("command")
+if isinstance(value, str):
+    sys.stdout.write(value)
+' 2>/dev/null
   else
     extract_json_string_field "$payload" "command"
   fi
 }
 
 # --- Detecções: credential-exfil-guard -------------------------------------
+# printf em vez de echo: um comando começando com -n/-e seria engolido pelo
+# echo e escaparia da detecção.
 
 is_secret_grep_env_dump() {
-  echo "$1" | grep -qiE '(env|printenv|set)\s*\|.*grep.*\b(token|secret|key|password|credential|auth|oauth|cookie|session|api.key)\b'
+  printf '%s\n' "$1" | grep -qiE '(env|printenv|set)\s*\|.*grep.*\b(token|secret|key|password|credential|auth|oauth|cookie|session|api.key)\b'
 }
 
 # grep sobre dump de ambiente por QUALQUER termo — vaza valor mesmo se o
 # termo não for óbvio (#69053: "env | grep JIRA" vazou JIRA_API_TOKEN).
 is_any_grep_env_dump() {
-  echo "$1" | grep -qiE '(env|printenv|set)\s*\|.*grep'
+  printf '%s\n' "$1" | grep -qiE '(env|printenv|set)\s*\|.*grep'
 }
 
 is_credential_file_search() {
-  echo "$1" | grep -qiE 'find\s.*-name\s.*\*?(token|secret|credential|password|\.key|\.pem|\.p12|\.pfx|\.keystore|\.jks|\.env)'
+  printf '%s\n' "$1" | grep -qiE 'find\s.*-name\s.*\*?(token|secret|credential|password|\.key|\.pem|\.p12|\.pfx|\.keystore|\.jks|\.env)'
 }
 
 is_ssh_credential_read() {
-  echo "$1" | grep -qE 'cat\s+(~|/home|/root)/.ssh/(id_|authorized_keys|known_hosts|config)'
+  printf '%s\n' "$1" | grep -qE 'cat\s+(~|/home|/root)/.ssh/(id_|authorized_keys|known_hosts|config)'
 }
 
 is_system_credential_read() {
-  echo "$1" | grep -qE 'cat\s+(/etc/shadow|/etc/gshadow|/etc/passwd)'
+  printf '%s\n' "$1" | grep -qE 'cat\s+(/etc/shadow|/etc/gshadow|/etc/passwd)'
 }
 
 is_cloud_credential_read() {
-  echo "$1" | grep -qE 'cat\s+(~|/home|/root)/\.(aws|gcloud|azure|kube)/(credentials|config|token)'
+  printf '%s\n' "$1" | grep -qE 'cat\s+(~|/home|/root)/\.(aws|gcloud|azure|kube)/(credentials|config|token)'
 }
 
 is_browser_credential_hunt() {
-  echo "$1" | grep -qiE 'find\s.*\.(chrome|firefox|mozilla|safari).*\b(login|password|cookie|token)\b'
+  printf '%s\n' "$1" | grep -qiE 'find\s.*\.(chrome|firefox|mozilla|safari).*\b(login|password|cookie|token)\b'
 }
 
 is_bare_env_dump() {
-  echo "$1" | grep -qE '^\s*(env|printenv|set)\s*$'
+  printf '%s\n' "$1" | grep -qE '^\s*(env|printenv|set)\s*$'
 }
 
 is_credential_file_upload() {
-  echo "$1" | grep -qiE 'curl[[:space:]].*-d[[:space:]]+@[^[:space:]]*(\.env|\.pem|\.key|credentials|\.ssh/id_)|wget[[:space:]].*--post-file[= ][^[:space:]]*(\.env|\.pem|\.key|credentials|\.ssh/id_)'
+  printf '%s\n' "$1" | grep -qiE 'curl[[:space:]].*-d[[:space:]]+@[^[:space:]]*(\.env|\.pem|\.key|credentials|\.ssh/id_)|wget[[:space:]].*--post-file[= ][^[:space:]]*(\.env|\.pem|\.key|credentials|\.ssh/id_)'
 }
 
 is_credential_file_piped_to_network() {
-  echo "$1" | grep -qiE 'cat[[:space:]]+[^[:space:]]*(\.env|\.pem|\.key|credentials|\.ssh/id_)[^[:space:]]*[[:space:]]*\|.*curl|cat[[:space:]]+[^[:space:]]*(\.env|\.pem|\.key|credentials|\.ssh/id_)[^[:space:]]*[[:space:]]*\|.*wget'
+  printf '%s\n' "$1" | grep -qiE 'cat[[:space:]]+[^[:space:]]*(\.env|\.pem|\.key|credentials|\.ssh/id_)[^[:space:]]*[[:space:]]*\|.*curl|cat[[:space:]]+[^[:space:]]*(\.env|\.pem|\.key|credentials|\.ssh/id_)[^[:space:]]*[[:space:]]*\|.*wget'
 }
 
 # security find-generic/internet-password -w de um serviço com nome de segredo.
 is_macos_keychain_secret_extraction() {
-  echo "$1" | grep -qiE 'security\s+find-(generic|internet)-password' \
-    && echo "$1" | grep -qE '(^|[[:space:]])-w([[:space:]]|$)' \
-    && echo "$1" | grep -qiE 'ANTHROPIC|OPENAI|AUTH[_-]?TOKEN|API[_-]?KEY|ACCESS[_-]?TOKEN|[_-]SECRET|OAUTH|GITHUB[_-]?TOKEN|(^|[^a-z])secret([^a-z]|$)'
+  printf '%s\n' "$1" | grep -qiE 'security\s+find-(generic|internet)-password' \
+    && printf '%s\n' "$1" | grep -qE '(^|[[:space:]])-w([[:space:]]|$)' \
+    && printf '%s\n' "$1" | grep -qiE 'ANTHROPIC|OPENAI|AUTH[_-]?TOKEN|API[_-]?KEY|ACCESS[_-]?TOKEN|[_-]SECRET|OAUTH|GITHUB[_-]?TOKEN|(^|[^a-z])secret([^a-z]|$)'
 }
 
 is_keychain_piped_to_network() {
-  echo "$1" | grep -qiE 'security\s+find-(generic|internet)-password' \
-    && echo "$1" | grep -qiE '\|[[:space:]]*(curl|wget|nc|ncat|telnet)([[:space:]]|$)'
+  printf '%s\n' "$1" | grep -qiE 'security\s+find-(generic|internet)-password' \
+    && printf '%s\n' "$1" | grep -qiE '\|[[:space:]]*(curl|wget|nc|ncat|telnet)([[:space:]]|$)'
 }
 
 # $TOKEN/$SECRET/etc pipado direto pra um cliente de rede (não header).
 is_secret_env_piped_to_network() {
-  echo "$1" | grep -qE '\$\{?[A-Za-z_]*(TOKEN|SECRET|API[_-]?KEY|PASSWORD|CREDENTIAL|AUTH)[A-Za-z_]*' \
-    && echo "$1" | grep -qiE '\|[[:space:]]*(curl|wget|nc|ncat|telnet)([[:space:]]|$)'
+  printf '%s\n' "$1" | grep -qE '\$\{?[A-Za-z_]*(TOKEN|SECRET|API[_-]?KEY|PASSWORD|CREDENTIAL|AUTH)[A-Za-z_]*' \
+    && printf '%s\n' "$1" | grep -qiE '\|[[:space:]]*(curl|wget|nc|ncat|telnet)([[:space:]]|$)'
 }
 
 # --- Detecções: db-connect-guard -------------------------------------------
 
 is_remote_sql_connect() {
-  echo "$1" | grep -qE '\b(mysql|psql|mongo(sh)?)\s+.*(-h\s+|--host[= ])'
+  printf '%s\n' "$1" | grep -qE '\b(mysql|psql|mongo(sh)?)\s+.*(-h\s+|--host[= ])'
 }
 
 is_remote_redis_connect() {
-  echo "$1" | grep -qE '\bredis-cli\s+.*(-h\s+|--host)'
+  printf '%s\n' "$1" | grep -qE '\bredis-cli\s+.*(-h\s+|--host)'
 }
 
 is_prisma_destructive_command() {
-  echo "$1" | grep -qE '\bprisma\s+(db\s+push|migrate\s+deploy|migrate\s+reset)'
+  printf '%s\n' "$1" | grep -qE '\bprisma\s+(db\s+push|migrate\s+deploy|migrate\s+reset)'
 }
 
 # --- Config -----------------------------------------------------------------
@@ -151,6 +182,18 @@ trace_log_path() {
   fi
 }
 
+# Achata quebras de linha e corta em 500 caracteres: uma entrada do trace log
+# é UMA linha, e comandos multi-linha quebravam o formato para quem lê com
+# grep/tail.
+sanitize_trace_detail() {
+  local detail="$1"
+  detail="$(printf '%s' "$detail" | tr '\n\r\t' '   ')"
+  if [ "${#detail}" -gt 500 ]; then
+    detail="${detail:0:500}…"
+  fi
+  printf '%s' "$detail"
+}
+
 # Args: timestamp_iso guard decision detail
 format_trace_line() {
   local ts="$1" guard="$2" decision="$3" detail="${4:-}"
@@ -159,5 +202,6 @@ format_trace_line() {
 
 # Args: guard decision [detail]
 trace_log() {
-  format_trace_line "$(date -Iseconds)" "$1" "$2" "${3:-}" >> "$(trace_log_path)" 2>/dev/null || true
+  format_trace_line "$(date -Iseconds)" "$1" "$2" "$(sanitize_trace_detail "${3:-}")" \
+    >> "$(trace_log_path)" 2>/dev/null || true
 }

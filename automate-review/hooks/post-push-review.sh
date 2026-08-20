@@ -15,15 +15,10 @@ source "$SCRIPT_DIR/lib.sh"
 # cwd/session_id). branch/sha/remoto são resolvidos via git, não via parsing
 # do JSON — mais robusto a variações de sintaxe do comando interceptado.
 payload="$(cat)"
-if command -v jq >/dev/null 2>&1; then
-  command_text="$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null)"
-  cwd="$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null)"
-else
-  # jq não vem por padrão no Git for Windows/MSYS2 — fallback sem dependência
-  # externa, só bash/grep/sed (ver extract_json_string_field em lib.sh).
-  command_text="$(extract_json_string_field "$payload" "command")"
-  cwd="$(extract_json_string_field "$payload" "cwd")"
-fi
+# jq -> python3 -> regex (jq não vem por padrão no Git for Windows/MSYS2).
+# Ver _read_payload_field em lib.sh.
+command_text="$(read_tool_command "$payload")"
+cwd="$(read_payload_cwd "$payload")"
 cwd="${cwd:-$PWD}"
 
 # Defesa extra: alguns filtros de hook de plataforma só permitem filtrar por
@@ -65,8 +60,17 @@ if ! is_automation_enabled; then
 fi
 
 # Dispara o poller pesado em background e devolve o controle imediatamente.
-nohup "$SCRIPT_DIR/poll-and-review.sh" "$cwd" "$branch" "$feature_name" "$discreet_log" \
-  >> "$discreet_log" 2>&1 < /dev/null &
+# setsid dá sessão/grupo de processo próprios ao poller, então ele sobrevive
+# mesmo que a plataforma mate o grupo do hook ao encerrá-lo (plataforma com
+# hook síncrono, como o Devin CLI). Sem setsid disponível, nohup + disown já
+# cobre o caso comum.
+if command -v setsid >/dev/null 2>&1; then
+  setsid "$SCRIPT_DIR/poll-and-review.sh" "$cwd" "$branch" "$feature_name" "$discreet_log" \
+    >> "$discreet_log" 2>&1 < /dev/null &
+else
+  nohup "$SCRIPT_DIR/poll-and-review.sh" "$cwd" "$branch" "$feature_name" "$discreet_log" \
+    >> "$discreet_log" 2>&1 < /dev/null &
+fi
 disown
 
 exit 0

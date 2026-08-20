@@ -35,9 +35,14 @@ assert_eq "classify_environment: microsoft tem prioridade mesmo com MSYSTEM seta
   "wsl2" "$(classify_environment "Linux version 5.15.0-microsoft-standard-WSL2" "MINGW64")"
 
 # --- detect_environment (integração com o host real de teste) ---
+# Sem fixar o host: a suíte tem que rodar tanto no WSL2 quanto no Git Bash,
+# que são justamente os dois ambientes que a automação suporta.
 
-assert_eq "detect_environment reflete o host real (aqui: WSL2)" \
-  "wsl2" "$(detect_environment)"
+case "$(detect_environment)" in
+  wsl2|gitbash|unknown) r=0 ;;
+  *) r=1 ;;
+esac
+assert_eq "detect_environment devolve um dos valores conhecidos" "0" "$r"
 
 # --- to_native_path ---
 
@@ -186,11 +191,25 @@ assert_eq "TERMINAL_CMD: config.env consegue sobrescrever com outro terminal" \
 rm -f "$_tmp_config2"
 AGENT_PR_REVIEW_TERMINAL_CMD=()
 
-# --- resolve_config (defaults) ---
+# --- getters de configuração ---
+# Um getter por variável em vez de uma linha só: com a linha única, um
+# skill_path com espaço vazava pro campo seguinte e o limite do gate virava
+# texto (review-db.py rejeitava --max e a automação rodava sem gate).
 
 unset AGENT_PR_REVIEW_ENABLED AGENT_PR_REVIEW_POLL_INTERVAL_SEC AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS AGENT_PR_REVIEW_SKILL_PATH AGENT_PR_REVIEW_MAX_PER_BRANCH
-assert_eq "resolve_config: default desligado" \
-  "false 30 20 $HOME/development/tools/automate-review 3" "$(resolve_config)"
+assert_eq "review_poll_interval_sec: default 30" "30" "$(review_poll_interval_sec)"
+assert_eq "review_poll_max_attempts: default 20" "20" "$(review_poll_max_attempts)"
+assert_eq "review_max_per_branch: default 3" "3" "$(review_max_per_branch)"
+assert_eq "review_skill_path: default é esta pasta em \$HOME" \
+  "$HOME/development/tools/automate-review" "$(review_skill_path)"
+
+assert_eq "review_skill_path: caminho com espaço sai inteiro" \
+  "/c/Program Files/tools/automate-review" \
+  "$(AGENT_PR_REVIEW_SKILL_PATH='/c/Program Files/tools/automate-review' review_skill_path)"
+assert_eq "review_max_per_branch: não é contaminado por skill_path com espaço" \
+  "3" "$(AGENT_PR_REVIEW_SKILL_PATH='/c/Program Files/tools/automate-review' review_max_per_branch)"
+assert_eq "review_poll_interval_sec: valor inválido cai no default" \
+  "30" "$(AGENT_PR_REVIEW_POLL_INTERVAL_SEC=abc review_poll_interval_sec)"
 
 AGENT_PR_REVIEW_ENABLED=true
 assert_eq "is_automation_enabled: true quando env var é 'true'" "0" "$(is_automation_enabled; echo $?)"
@@ -268,6 +287,49 @@ assert_eq "trace_log_path: cria o diretório pai do override sob demanda" \
   "0" "$([ -d "$_tmp_trace_dir/custom" ]; echo $?)"
 rm -rf "$_tmp_trace_dir"
 unset AGENT_PR_REVIEW_TRACE_LOG_PATH
+
+# --- extração do payload: aspas escapadas ------------------------------------
+# Truncar no primeiro \" deixava o gate "é git push?" cego pro resto do comando.
+
+assert_eq "extract_json_string_field: não trunca em aspas escapadas" \
+  'git commit -m "wip" && git push' \
+  "$(extract_json_string_field '{"tool_input":{"command":"git commit -m \"wip\" && git push"}}' command)"
+
+assert_eq "read_tool_command: comando com aspas escapadas chega inteiro" \
+  'git commit -m "wip" && git push' \
+  "$(read_tool_command '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"wip\" && git push"}}')"
+
+assert_eq "read_payload_cwd: cwd com espaço chega inteiro" \
+  "/root/meu repo" "$(read_payload_cwd '{"cwd":"/root/meu repo","tool_input":{}}')"
+
+assert_eq "read_tool_command: payload sem command -> vazio" \
+  "" "$(read_tool_command '{"cwd":"/x"}')"
+
+# --- emit_script_line --------------------------------------------------------
+# O git aceita aspas simples no nome da branch; interpoladas cruas dentro de
+# '...' quebravam o script gerado e davam injeção de comando.
+
+assert_eq "emit_script_line: escapa aspas simples do nome da branch" \
+  "echo CI\\ falhou:\\ feature/it\\'s-broken" \
+  "$(emit_script_line echo "CI falhou: feature/it's-broken")"
+
+_gerado="$(mktemp)"
+{
+  printf '#!/usr/bin/env bash\n'
+  emit_script_line cd "/c/Program Files/tools"
+  emit_script_line echo "branch feature/it's-broken; touch $_gerado.INVADIDO"
+} > "$_gerado"
+assert_eq "emit_script_line: script gerado é bash válido mesmo com aspas no meio" \
+  "0" "$(bash -n "$_gerado" >/dev/null 2>&1; echo $?)"
+assert_eq "emit_script_line: nome de branch hostil não vira comando executado" \
+  "1" "$(bash -c "cd /tmp && bash '$_gerado'" >/dev/null 2>&1; [ -e "$_gerado.INVADIDO" ]; echo $?)"
+rm -f "$_gerado" "$_gerado.INVADIDO"
+
+# --- sanitize_trace_detail ---------------------------------------------------
+
+assert_eq "sanitize_trace_detail: achata quebra de linha (1 evento = 1 linha)" \
+  "cmd=git push a b" "$(sanitize_trace_detail "cmd=git push a
+b")"
 
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."
