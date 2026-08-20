@@ -19,8 +19,15 @@ log() {
   printf '[%s] %s\n' "$(date -Iseconds)" "$1"
 }
 
-# shellcheck disable=SC2046
-read -r _enabled interval_sec max_attempts skill_path max_per_branch <<< "$(resolve_config)"
+interval_sec="$(review_poll_interval_sec)"
+max_attempts="$(review_poll_max_attempts)"
+skill_path="$(review_skill_path)"
+max_per_branch="$(review_max_per_branch)"
+
+if ! command -v gh >/dev/null 2>&1; then
+  log "ERRO: 'gh' não encontrado no PATH — sem ele não dá pra consultar a CI nem a PR. Abortando."
+  exit 1
+fi
 
 environment="$(detect_environment)"
 if [ "$environment" = "unknown" ]; then
@@ -46,11 +53,24 @@ attempt=0
 while [ "$attempt" -lt "$max_attempts" ]; do
   attempt=$((attempt + 1))
 
-  checks_json="$(gh api "repos/$repo/commits/$commit_sha/check-runs" --jq '.check_runs' 2>/dev/null || echo "[]")"
+  # Classifica cada check-run com o jq embutido do gh, uma linha por run, em
+  # vez de grepar o JSON cru: o espaçamento da saída do gh não é contrato, um
+  # check chamado `"conclusion":"success"` envenenaria a contagem, e status
+  # que não sejam queued/in_progress (waiting, requested, pending) ficavam
+  # invisíveis — o polling encerrava como "success" com check ainda rodando.
+  # per_page=100 + --paginate: a API devolve só 30 check-runs por padrão.
+  check_states="$(gh api "repos/$repo/commits/$commit_sha/check-runs?per_page=100" --paginate --jq '
+    .check_runs[]
+    | if .status != "completed" then "pending"
+      elif .conclusion == "success" then "success"
+      elif (.conclusion == "failure" or .conclusion == "cancelled"
+            or .conclusion == "timed_out" or .conclusion == "action_required"
+            or .conclusion == "startup_failure") then "failure"
+      else "other" end' 2>/dev/null || printf '')"
 
-  success_count=$(printf '%s' "$checks_json" | grep -o '"conclusion":"success"' | wc -l)
-  failure_count=$(printf '%s' "$checks_json" | grep -oE '"conclusion":"(failure|cancelled|timed_out)"' | wc -l)
-  pending_count=$(printf '%s' "$checks_json" | grep -o '"status":"queued"\|"status":"in_progress"' | wc -l)
+  success_count=$(printf '%s\n' "$check_states" | grep -c '^success$')
+  failure_count=$(printf '%s\n' "$check_states" | grep -c '^failure$')
+  pending_count=$(printf '%s\n' "$check_states" | grep -c '^pending$')
 
   state="$(classify_state "$success_count" "$failure_count" "$pending_count" "$attempt" "$max_attempts")"
 
@@ -139,43 +159,43 @@ log_file_native="$(to_native_path "$environment" "$log_file")" || {
   exit 1
 }
 
+# Todo valor interpolado aqui (branch, repo, caminhos) passa por
+# emit_script_line, que escapa com printf %q. O git aceita aspas simples no
+# nome da branch (`feature/it's-broken`) — interpolar direto dentro de '...'
+# gerava um script quebrado e dava pra injetar comando pelo nome da branch.
 {
-  echo "#!/usr/bin/env bash"
-  echo "cd '$skill_path_native'"
-  echo "cat '$log_file_native'"
-  echo "echo"
+  printf '#!/usr/bin/env bash\n'
+  emit_script_line cd "$skill_path_native"
+  emit_script_line cat "$log_file_native"
+  printf 'echo\n'
   case "$state" in
     success)
       if [ -n "$pr_url" ]; then
-        echo "echo '✅ CI passou para a branch $branch — abrindo revisão de PR.'"
+        emit_script_line echo "✅ CI passou para a branch $branch — abrindo revisão de PR."
         # Plataforma/prompt configurável via AGENT_PR_REVIEW_PLATFORM_CMD
         # (default: Claude Code + skill review-pr) — ver lib.sh.
-        echo "$(render_platform_cmd_line "$pr_url" "$repo")"
+        printf '%s\n' "$(render_platform_cmd_line "$pr_url" "$repo")"
       else
-        echo "echo '✅ CI passou para a branch $branch, mas nenhuma PR foi encontrada ainda para invocar a revisão.'"
-        echo "echo 'Abra a PR e rode a skill review-pr manualmente quando estiver pronta.'"
-        echo "exec bash"
+        emit_script_line echo "✅ CI passou para a branch $branch, mas nenhuma PR foi encontrada ainda para invocar a revisão."
+        emit_script_line echo "Abra a PR e rode a skill review-pr manualmente quando estiver pronta."
+        printf 'exec bash\n'
       fi
       ;;
     failure)
-      cat <<MSG
-echo "❌ CI falhou para a branch feature/$feature_name"
-echo "Repositório: $repo"
-echo "Commit: $commit_sha"
-echo "Automação de review NÃO foi executada."
-echo "Veja os detalhes em: $checks_url"
-exec bash
-MSG
+      emit_script_line echo "❌ CI falhou para a branch $branch"
+      emit_script_line echo "Repositório: $repo"
+      emit_script_line echo "Commit: $commit_sha"
+      emit_script_line echo "Automação de review NÃO foi executada."
+      emit_script_line echo "Veja os detalhes em: $checks_url"
+      printf 'exec bash\n'
       ;;
     timeout)
-      cat <<MSG
-echo "⚠️  CI não respondeu após $max_attempts tentativas para a branch feature/$feature_name"
-echo "Repositório: $repo"
-echo "Commit: $commit_sha"
-echo "A automação de review NÃO foi executada — motivo: sem resposta definitiva da CI (nem sucesso, nem falha)."
-echo "Verifique manualmente em: $checks_url"
-exec bash
-MSG
+      emit_script_line echo "⚠️  CI não respondeu após $max_attempts tentativas para a branch $branch"
+      emit_script_line echo "Repositório: $repo"
+      emit_script_line echo "Commit: $commit_sha"
+      emit_script_line echo "A automação de review NÃO foi executada — motivo: sem resposta definitiva da CI (nem sucesso, nem falha)."
+      emit_script_line echo "Verifique manualmente em: $checks_url"
+      printf 'exec bash\n'
       ;;
   esac
 } > "$final_script"
