@@ -8,24 +8,30 @@ grep/sed sem risco real de corromper o arquivo).
 Uso: install_merge.py TARGET_FILE SOURCE_FILE SOURCE_SHAPE TARGET_SHAPE OUTPUT_FILE
   SHAPE em {flat, nested} — nested = eventos dentro de "hooks".
 
-Dedup + ordenação IDÊNTICA ao "unique" do jq (chave = JSON canônico do
-item), pra dar o mesmo resultado nas duas engines.
+Preserva a ordem: o que já está no alvo continua onde está e o que é novo
+vai pro fim — hook roda na ordem em que aparece no arquivo, então reordenar
+muda comportamento. Mesma semântica do lado jq de install.sh.
 """
 import json
 import sys
 
 
-def dedup_sorted(items):
-    by_key = {}
-    for item in items:
-        by_key[json.dumps(item, sort_keys=True)] = item
-    return [by_key[k] for k in sorted(by_key.keys())]
+def append_new(existing, incoming):
+    """Acrescenta só o que ainda não está em `existing`, preservando a ordem.
+
+    A comparação é por igualdade de valor (dois dicts com as mesmas chaves
+    são iguais independente da ordem delas), igual ao `==` do jq.
+    """
+    merged = list(existing)
+    for item in incoming:
+        if item not in merged:
+            merged.append(item)
+    return merged
 
 
 def merge_events(target_events, source_events):
     for event, entries in source_events.items():
-        combined = target_events.get(event, []) + entries
-        target_events[event] = dedup_sorted(combined)
+        target_events[event] = append_new(target_events.get(event, []), entries)
     return target_events
 
 
