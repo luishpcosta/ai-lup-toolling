@@ -196,6 +196,57 @@ assert_eq "trace_log: grava uma linha em data/trace.log" \
   "1" "$(grep -c "$_trace_marker" "$(trace_log_path)" 2>/dev/null || echo 0)"
 sed -i "/$_trace_marker/d" "$(trace_log_path)" 2>/dev/null || true
 
+
+# --- regressão: extração de comando com aspas escapadas ---------------------
+# Sem isso o valor era truncado no primeiro \" e o guard deixava passar.
+
+assert_eq "extract_json_string_field: não trunca em aspas escapadas" \
+  'echo "oi" ; cat ~/.ssh/id_rsa' \
+  "$(extract_json_string_field '{"tool_input":{"command":"echo \"oi\" ; cat ~/.ssh/id_rsa"}}' command)"
+
+assert_eq "extract_json_string_field: barra invertida escapada não vira escape de aspa" \
+  'sed s/a\\b/c/' \
+  "$(extract_json_string_field '{"tool_input":{"command":"sed s/a\\\\b/c/"}}' command)"
+
+assert_eq "json_unescape: \\\" \\\\ e \\/ numa passada só" \
+  'a"b\c/d' "$(json_unescape 'a\"b\\c\/d')"
+
+assert_eq "read_tool_command: comando com aspas escapadas chega inteiro" \
+  'echo "oi" ; cat ~/.ssh/id_rsa' \
+  "$(read_tool_command '{"tool_name":"Bash","tool_input":{"command":"echo \"oi\" ; cat ~/.ssh/id_rsa"}}')"
+
+# --- regressão: comando iniciado por -e/-n não escapa da detecção ----------
+
+assert_true "is_ssh_credential_read: comando começando com -e (printf, não echo)" \
+  is_ssh_credential_read "-e cat ~/.ssh/id_rsa"
+
+# --- sanitize_trace_detail --------------------------------------------------
+
+assert_eq "sanitize_trace_detail: achata quebra de linha (1 evento = 1 linha)" \
+  "cmd=cat a b" "$(sanitize_trace_detail "cmd=cat a
+b")"
+
+assert_eq "sanitize_trace_detail: corta em 500 caracteres" \
+  "501" "$(sanitize_trace_detail "$(printf 'x%.0s' $(seq 1 900))" | wc -m)"
+
+# --- regressão end-to-end: aviso não pode encurtar o guard -------------------
+# `env | grep FOO` só avisa; o `cat ~/.ssh/id_rsa` depois dele TEM que bloquear.
+
+_guard="$SCRIPT_DIR/../guards/credential-exfil-guard.sh"
+
+_run_guard() {
+  printf '%s' "$1" | "$_guard" >/dev/null 2>&1
+  echo $?
+}
+
+assert_eq "guard: comando só de aviso continua liberado (exit 0)" \
+  "0" "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"env | grep FOO"}}')"
+
+assert_eq "guard: aviso seguido de comando bloqueável ainda bloqueia (exit 2)" \
+  "2" "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"env | grep FOO; cat ~/.ssh/id_rsa"}}')"
+
+assert_eq "guard: comando benigno passa (exit 0)" \
+  "0" "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"npm run build"}}')"
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."
 [ "$fail" -eq 0 ]

@@ -25,16 +25,18 @@ block_if() {
   exit 2
 }
 
-# Bate no padrão de $1 -> imprime WARNING, loga e sai com exit 0 (não bloqueia).
+# Bate no padrão de $1 -> imprime WARNING e loga. NÃO sai: um aviso não pode
+# encerrar o guard antes das checagens de bloqueio seguintes, senão prefixar
+# um comando perigoso com algo que só avisa vira bypass
+# (`env | grep FOO; cat ~/.ssh/id_rsa` passava batido).
 warn_if() {
   "$1" "$COMMAND" || return 0
   echo "WARNING [$GUARD]: $2" >&2
   trace_log "$GUARD" WARNING "$2 | cmd=$COMMAND"
-  exit 0
 }
 
-block_if is_secret_grep_env_dump  "caça de credencial via variável de ambiente"
-warn_if  is_any_grep_env_dump     "grep sobre dump de ambiente vaza valor mesmo sem termo óbvio (#69053)"
+block_if is_secret_grep_env_dump               "caça de credencial via variável de ambiente"
+warn_if  is_any_grep_env_dump                  "grep sobre dump de ambiente vaza valor mesmo sem termo óbvio (#69053)"
 block_if is_credential_file_search             "caça de credencial via busca de arquivo"
 block_if is_ssh_credential_read                "acesso direto a credencial SSH"
 block_if is_system_credential_read             "acesso a credencial do sistema (/etc/shadow etc.)"
