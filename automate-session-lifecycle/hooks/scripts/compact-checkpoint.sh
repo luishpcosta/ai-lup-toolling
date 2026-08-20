@@ -31,6 +31,6 @@ git commit -m "$MESSAGE" --no-verify >/dev/null 2>&1
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 
 format_checkpoint_notice "$COUNT" "$BRANCH" >&2
-audit_log "compact-checkpoint" ACTION "commit criado ($COUNT arquivos) em $BRANCH"
+trace_log "compact-checkpoint" ACTION "commit criado ($COUNT arquivos) em $BRANCH"
 
 exit 0

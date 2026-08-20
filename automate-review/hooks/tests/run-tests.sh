@@ -254,6 +254,21 @@ assert_eq "AUTOMERGE_REPOS: config.env consegue definir a lista" \
 rm -f "$_tmp_config4"
 AGENT_PR_REVIEW_AUTOMERGE_REPOS=()
 
+# --- trace_log_path (override via AGENT_PR_REVIEW_TRACE_LOG_PATH) ----------
+
+unset AGENT_PR_REVIEW_TRACE_LOG_PATH
+assert_eq "trace_log_path: default é data/trace.log dentro da pasta" \
+  "$(cd "$SCRIPT_DIR/../.." && pwd)/data/trace.log" "$(trace_log_path)"
+
+_tmp_trace_dir="$(mktemp -d)"
+AGENT_PR_REVIEW_TRACE_LOG_PATH="$_tmp_trace_dir/custom/trace.log"
+assert_eq "trace_log_path: override aponta pro caminho configurado" \
+  "$_tmp_trace_dir/custom/trace.log" "$(trace_log_path)"
+assert_eq "trace_log_path: cria o diretório pai do override sob demanda" \
+  "0" "$([ -d "$_tmp_trace_dir/custom" ]; echo $?)"
+rm -rf "$_tmp_trace_dir"
+unset AGENT_PR_REVIEW_TRACE_LOG_PATH
+
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."
 [ "$fail" -eq 0 ]

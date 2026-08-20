@@ -106,7 +106,7 @@ load_config_env() {
   local config_file="$1"
   [ -f "$config_file" ] || return 0
 
-  local vars=(SECURITY_GUARD_ENABLED)
+  local vars=(SECURITY_GUARD_ENABLED SECURITY_GUARD_TRACE_LOG_PATH)
   local var
   local -A prior=()
 
@@ -128,10 +128,10 @@ is_security_guard_enabled() {
   [ "${SECURITY_GUARD_ENABLED:-true}" != "false" ]
 }
 
-# --- Log de auditoria -------------------------------------------------------
-# data/audit.log — 1 arquivo por pasta de ferramenta, git-ignored (runtime,
-# não código). Registra todo BLOCKED/WARNING, nunca os "passou sem bater
-# em nada" (senão vira ruído). Best-effort: nunca derruba o guard chamador.
+# --- Trace log --------------------------------------------------------------
+# Mesmo padrão de automate-review/hooks/lib.sh. Registra todo BLOCKED/WARNING
+# — nunca os "passou sem bater em nada" (senão vira ruído). Best-effort:
+# nunca derruba o guard chamador.
 
 _data_dir() {
   local dir
@@ -140,17 +140,24 @@ _data_dir() {
   printf '%s' "$dir"
 }
 
-audit_log_path() {
-  printf '%s/audit.log' "$(_data_dir)"
+# Default: data/trace.log nesta pasta. Override via
+# SECURITY_GUARD_TRACE_LOG_PATH (config.env ou env var).
+trace_log_path() {
+  if [ -n "${SECURITY_GUARD_TRACE_LOG_PATH:-}" ]; then
+    mkdir -p "$(dirname "$SECURITY_GUARD_TRACE_LOG_PATH")" 2>/dev/null || true
+    printf '%s' "$SECURITY_GUARD_TRACE_LOG_PATH"
+  else
+    printf '%s/trace.log' "$(_data_dir)"
+  fi
 }
 
 # Args: timestamp_iso guard decision detail
-format_audit_line() {
+format_trace_line() {
   local ts="$1" guard="$2" decision="$3" detail="${4:-}"
   printf '[%s] guard=%s decision=%s%s\n' "$ts" "$guard" "$decision" "${detail:+ detail=$detail}"
 }
 
 # Args: guard decision [detail]
-audit_log() {
-  format_audit_line "$(date -Iseconds)" "$1" "$2" "${3:-}" >> "$(audit_log_path)" 2>/dev/null || true
+trace_log() {
+  format_trace_line "$(date -Iseconds)" "$1" "$2" "${3:-}" >> "$(trace_log_path)" 2>/dev/null || true
 }

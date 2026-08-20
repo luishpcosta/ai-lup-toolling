@@ -34,10 +34,11 @@ Copie `examples/devin-hooks.json` pra `.devin/hooks.v1.json`.
 - `"PowerShell"` como ferramenta distinta no Devin: não confirmado. `examples/devin-hooks.json`
   registra só `"exec"`.
 
-## Auditoria
+## Trace log (auditoria)
 
-Todo `BLOCKED`/`WARNING` é gravado em `data/audit.log` (por máquina, git-ignored — não é código).
-Passagens sem bloqueio não são logadas.
+Todo `BLOCKED`/`WARNING` é gravado em `data/trace.log` (por máquina, git-ignored — não é código),
+mesmo padrão do `data/trace.log` de [`automate-review/`](../automate-review). Passagens sem
+bloqueio não são logadas.
 
 ```
 [2026-08-19T14:32:01-03:00] guard=credential-exfil-guard decision=BLOCKED detail=acesso direto a credencial SSH | cmd=cat ~/.ssh/id_rsa
@@ -48,6 +49,7 @@ Passagens sem bloqueio não são logadas.
 | Variável | Papel |
 |---|---|
 | `SECURITY_GUARD_ENABLED` | Liga/desliga os dois guards (`true` por padrão) |
+| `SECURITY_GUARD_TRACE_LOG_PATH` | Onde grava o trace log (default: `data/trace.log` nesta pasta) |
 
 ## Testar
 

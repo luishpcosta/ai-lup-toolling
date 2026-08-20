@@ -21,7 +21,7 @@ GUARD="credential-exfil-guard"
 block_if() {
   "$1" "$COMMAND" || return 0
   echo "BLOCKED [$GUARD]: $2" >&2
-  audit_log "$GUARD" BLOCKED "$2 | cmd=$COMMAND"
+  trace_log "$GUARD" BLOCKED "$2 | cmd=$COMMAND"
   exit 2
 }
 
@@ -29,7 +29,7 @@ block_if() {
 warn_if() {
   "$1" "$COMMAND" || return 0
   echo "WARNING [$GUARD]: $2" >&2
-  audit_log "$GUARD" WARNING "$2 | cmd=$COMMAND"
+  trace_log "$GUARD" WARNING "$2 | cmd=$COMMAND"
   exit 0
 }
 

@@ -89,17 +89,28 @@ RESOURCE_GUARD_ENABLED=false
 assert_eq "is_resource_guard_enabled: false quando explicitamente desligado" "1" "$(is_resource_guard_enabled; echo $?)"
 unset RESOURCE_GUARD_ENABLED
 
-# --- format_audit_line / audit_log ------------------------------------------
+# --- format_trace_line / trace_log / trace_log_path ------------------------
 
-assert_eq "format_audit_line: com detail" \
+assert_eq "format_trace_line: com detail" \
   "[2026-01-01T00:00:00-03:00] guard=subagent-budget-guard decision=BLOCKED detail=5 ativos" \
-  "$(format_audit_line "2026-01-01T00:00:00-03:00" "subagent-budget-guard" "BLOCKED" "5 ativos")"
+  "$(format_trace_line "2026-01-01T00:00:00-03:00" "subagent-budget-guard" "BLOCKED" "5 ativos")"
 
-_audit_marker="teste-run-tests-$$"
-audit_log "test-probe" "BLOCKED" "$_audit_marker"
-assert_eq "audit_log: grava uma linha em data/audit.log" \
-  "1" "$(grep -c "$_audit_marker" "$(audit_log_path)" 2>/dev/null || echo 0)"
-sed -i "/$_audit_marker/d" "$(audit_log_path)" 2>/dev/null || true
+unset RESOURCE_GUARD_TRACE_LOG_PATH
+assert_eq "trace_log_path: default é data/trace.log dentro da pasta" \
+  "$(cd "$SCRIPT_DIR/../.." && pwd)/data/trace.log" "$(trace_log_path)"
+
+_tmp_trace_dir="$(mktemp -d)"
+RESOURCE_GUARD_TRACE_LOG_PATH="$_tmp_trace_dir/custom/trace.log"
+assert_eq "trace_log_path: override aponta pro caminho configurado" \
+  "$_tmp_trace_dir/custom/trace.log" "$(trace_log_path)"
+unset RESOURCE_GUARD_TRACE_LOG_PATH
+rm -rf "$_tmp_trace_dir"
+
+_trace_marker="teste-run-tests-$$"
+trace_log "test-probe" "BLOCKED" "$_trace_marker"
+assert_eq "trace_log: grava uma linha em data/trace.log" \
+  "1" "$(grep -c "$_trace_marker" "$(trace_log_path)" 2>/dev/null || echo 0)"
+sed -i "/$_trace_marker/d" "$(trace_log_path)" 2>/dev/null || true
 
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."

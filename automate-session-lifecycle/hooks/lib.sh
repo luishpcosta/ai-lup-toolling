@@ -42,7 +42,8 @@ load_config_env() {
   local config_file="$1"
   [ -f "$config_file" ] || return 0
 
-  local vars=(SESSION_LIFECYCLE_CHECKPOINT_ENABLED SESSION_LIFECYCLE_WARMUP_ENABLED SESSION_LIFECYCLE_WARMUP_SECONDS)
+  local vars=(SESSION_LIFECYCLE_CHECKPOINT_ENABLED SESSION_LIFECYCLE_WARMUP_ENABLED
+    SESSION_LIFECYCLE_WARMUP_SECONDS SESSION_LIFECYCLE_TRACE_LOG_PATH)
   local var
   local -A prior=()
 
@@ -72,9 +73,9 @@ warmup_seconds() {
   echo "${SESSION_LIFECYCLE_WARMUP_SECONDS:-3}"
 }
 
-# --- Log de auditoria -------------------------------------------------------
-# data/audit.log — registra cada ação real tomada (commit criado, warmup
-# esperado). Best-effort.
+# --- Trace log --------------------------------------------------------------
+# Mesmo padrão de automate-review/hooks/lib.sh. Registra cada ação real
+# tomada (commit criado, warmup esperado). Best-effort.
 
 _data_dir() {
   local dir
@@ -83,17 +84,24 @@ _data_dir() {
   printf '%s' "$dir"
 }
 
-audit_log_path() {
-  printf '%s/audit.log' "$(_data_dir)"
+# Default: data/trace.log nesta pasta. Override via
+# SESSION_LIFECYCLE_TRACE_LOG_PATH (config.env ou env var).
+trace_log_path() {
+  if [ -n "${SESSION_LIFECYCLE_TRACE_LOG_PATH:-}" ]; then
+    mkdir -p "$(dirname "$SESSION_LIFECYCLE_TRACE_LOG_PATH")" 2>/dev/null || true
+    printf '%s' "$SESSION_LIFECYCLE_TRACE_LOG_PATH"
+  else
+    printf '%s/trace.log' "$(_data_dir)"
+  fi
 }
 
 # Args: timestamp_iso guard decision detail
-format_audit_line() {
+format_trace_line() {
   local ts="$1" guard="$2" decision="$3" detail="${4:-}"
   printf '[%s] guard=%s decision=%s%s\n' "$ts" "$guard" "$decision" "${detail:+ detail=$detail}"
 }
 
 # Args: guard decision [detail]
-audit_log() {
-  format_audit_line "$(date -Iseconds)" "$1" "$2" "${3:-}" >> "$(audit_log_path)" 2>/dev/null || true
+trace_log() {
+  format_trace_line "$(date -Iseconds)" "$1" "$2" "${3:-}" >> "$(trace_log_path)" 2>/dev/null || true
 }

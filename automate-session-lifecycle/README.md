@@ -35,10 +35,11 @@ Copie `examples/claude-settings.json` pro `.claude/settings.json` do repositóri
 
 Copie `examples/devin-hooks.json` pra `.devin/hooks.v1.json` (`PostCompaction` + `SessionStart`).
 
-## Auditoria
+## Trace log (auditoria)
 
-Toda ação real (commit criado, warmup esperado) vai pra `data/audit.log` (por máquina, git-ignored)
-— além do próprio `git log` já servir de trilha pro checkpoint.
+Toda ação real (commit criado, warmup esperado) vai pra `data/trace.log` (por máquina,
+git-ignored) — mesmo padrão do `data/trace.log` de [`automate-review/`](../automate-review) —,
+além do próprio `git log` já servir de trilha pro checkpoint.
 
 ## Config (`config.env`)
 
@@ -47,6 +48,7 @@ Toda ação real (commit criado, warmup esperado) vai pra `data/audit.log` (por 
 | `SESSION_LIFECYCLE_CHECKPOINT_ENABLED` | Liga/desliga o checkpoint (`true` por padrão) |
 | `SESSION_LIFECYCLE_WARMUP_ENABLED` | Liga/desliga o warmup (`true` por padrão) |
 | `SESSION_LIFECYCLE_WARMUP_SECONDS` | Segundos de espera (default `3`) |
+| `SESSION_LIFECYCLE_TRACE_LOG_PATH` | Onde grava o trace log (default: `data/trace.log` nesta pasta) |
 
 ## Testar
 

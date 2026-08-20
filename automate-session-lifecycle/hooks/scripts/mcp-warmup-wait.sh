@@ -41,6 +41,6 @@ done
 
 sleep "$SECONDS_TO_WAIT"
 format_warmup_notice "$SECONDS_TO_WAIT" >&2
-audit_log "mcp-warmup-wait" ACTION "esperou ${SECONDS_TO_WAIT}s (config: $candidate)"
+trace_log "mcp-warmup-wait" ACTION "esperou ${SECONDS_TO_WAIT}s (config: $candidate)"
 
 exit 0

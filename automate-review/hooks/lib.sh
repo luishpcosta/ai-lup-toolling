@@ -16,7 +16,7 @@ load_config_env() {
 
   local vars=(AGENT_PR_REVIEW_ENABLED AGENT_PR_REVIEW_POLL_INTERVAL_SEC
     AGENT_PR_REVIEW_POLL_MAX_ATTEMPTS AGENT_PR_REVIEW_SKILL_PATH
-    AGENT_PR_REVIEW_MAX_PER_BRANCH)
+    AGENT_PR_REVIEW_MAX_PER_BRANCH AGENT_PR_REVIEW_TRACE_LOG_PATH)
   local var
   local -A prior=()
 
@@ -232,8 +232,16 @@ review_db_path() {
 }
 
 # Caminho do trace log central (nível de máquina, todos os repos/branches).
+# Default: data/trace.log dentro desta pasta. Override via
+# AGENT_PR_REVIEW_TRACE_LOG_PATH (config.env ou env var) para gravar em
+# outro lugar (ex.: um destino compartilhado entre máquinas).
 trace_log_path() {
-  printf '%s/trace.log' "$(_data_dir)"
+  if [ -n "${AGENT_PR_REVIEW_TRACE_LOG_PATH:-}" ]; then
+    mkdir -p "$(dirname "$AGENT_PR_REVIEW_TRACE_LOG_PATH")" 2>/dev/null || true
+    printf '%s' "$AGENT_PR_REVIEW_TRACE_LOG_PATH"
+  else
+    printf '%s/trace.log' "$(_data_dir)"
+  fi
 }
 
 # Grava uma linha no trace log central. Args: repo branch event [detail]

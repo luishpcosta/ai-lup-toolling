@@ -30,7 +30,7 @@ ACTIVE="$(count_active_entries "$CONTENT" "$NOW" "$TTL")"
 if [ "$ACTIVE" -ge "$MAX" ]; then
   MSG="$ACTIVE subagentes ativos (máximo: $MAX) — espere terminarem"
   echo "BLOCKED [subagent-budget-guard]: $MSG" >&2
-  audit_log "subagent-budget-guard" BLOCKED "$MSG"
+  trace_log "subagent-budget-guard" BLOCKED "$MSG"
   exit 2
 fi
 
