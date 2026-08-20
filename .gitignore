@@ -14,5 +14,8 @@
 __pycache__/
 *.pyc
 
-# Dados de runtime da automação de review de PR (por máquina, não código)
+# Dados de runtime das automações (logs/tracker por máquina, não código)
 automate-review/data/
+automate-security/data/
+automate-resource-guards/data/
+automate-session-lifecycle/data/

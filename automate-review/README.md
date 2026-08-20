@@ -108,6 +108,7 @@ script, ela vence sobre o arquivo (útil para um override pontual de teste).
 | `AGENT_PR_REVIEW_TERMINAL_CMD` | Array com o programa + flags do terminal a abrir (ver abaixo) |
 | `AGENT_PR_REVIEW_PLATFORM_CMD` | Array com o programa + prompt da plataforma agêntica a invocar (ver abaixo) |
 | `AGENT_PR_REVIEW_MAX_PER_BRANCH` | Máximo de revisões automatizadas por (repositório, branch) — ver "Gate de revisões" abaixo |
+| `AGENT_PR_REVIEW_TRACE_LOG_PATH` | Onde gravar o trace log central (default: `data/trace.log` nesta pasta) — ver "Trace log central" abaixo |
 | `AGENT_PR_REVIEW_AUTOMERGE_REPOS` | Array de repositórios (`owner/repo`) com merge automático — ver "Merge automático" abaixo |
 
 ### Trocar o terminal (`AGENT_PR_REVIEW_TERMINAL_CMD`)
@@ -235,6 +236,10 @@ auto-merge postado/falhado, erros no gate. Ele **complementa** o log por branch,
 
 Tanto `data/reviews.db` quanto `data/trace.log` são dados de runtime da máquina, não código —
 ficam fora do controle de versão (ver `.gitignore` na raiz do repositório).
+
+**Onde grava**: configurável via `AGENT_PR_REVIEW_TRACE_LOG_PATH` em `config.env` — aponte pra
+outro caminho (ex.: um destino compartilhado entre máquinas) se não quiser o default
+`data/trace.log` desta pasta. O diretório do caminho configurado é criado sob demanda.
 
 ## Estrutura
 

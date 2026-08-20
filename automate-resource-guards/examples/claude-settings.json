@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/development/tools/automate-resource-guards/hooks/guards/subagent-budget-guard.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
