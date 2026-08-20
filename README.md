@@ -22,4 +22,18 @@ repositório que queira reaproveitá-la.
 Todas compatíveis com Claude Code e Devin CLI (ver o README de cada uma para o que está confirmado
 via a documentação oficial de cada plataforma e o que ainda precisa de verificação manual).
 
-Veja o README de cada ferramenta para instruções de instalação e configuração.
+## Instalar (`install.sh`)
+
+```bash
+./install.sh                    # interativo: escolhe ferramenta(s), plataforma(s), escopo
+./install.sh --tools=all --platform=both --scope=global --yes
+./install.sh --tools=security --platform=claude --scope=repo --repo=/caminho/do/repo
+./install.sh --dry-run ...      # mostra o que mudaria, não escreve nada
+./install.sh --help
+```
+
+Instala uma ou várias ferramentas de uma vez, pra Claude Code e/ou Devin CLI, a nível global (`~`)
+ou de um repositório específico — mesclando no config já existente (nunca apaga nada, faz backup
+antes de mudar algo, roda de novo sem duplicar). Precisa de `jq`.
+
+Veja o README de cada ferramenta para detalhes de configuração além da instalação.

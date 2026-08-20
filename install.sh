@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# CLI de instalação dos hooks deste repositório (automate-review,
+# automate-security, automate-resource-guards, automate-session-lifecycle).
+# Escolhe ferramenta(s), plataforma(s) (Claude Code e/ou Devin CLI) e
+# escopo (global ou por repositório) — instala uma ou várias de uma vez,
+# mesclando no config existente sem apagar nada (backup automático).
+#
+# Uso interativo: ./install.sh
+# Uso por flags:   ./install.sh --tools=security,resource-guards --platform=both --scope=repo --repo=/caminho
+# Ajuda:            ./install.sh --help
+set -uo pipefail
+
+TOOLS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- registro de ferramentas ------------------------------------------------
+
+TOOL_KEYS=(review security resource-guards session-lifecycle)
+declare -A TOOL_DIR=(
+  [review]="automate-review"
+  [security]="automate-security"
+  [resource-guards]="automate-resource-guards"
+  [session-lifecycle]="automate-session-lifecycle"
+)
+declare -A TOOL_DESC=(
+  [review]="Review de PR pós-push (CI + skill review-pr)"
+  [security]="Guards de segurança (credencial, DB de produção)"
+  [resource-guards]="Guard de orçamento (limite de subagentes)"
+  [session-lifecycle]="Checkpoint de compactação + warmup de MCP"
+)
+# Aviso extra impresso depois de instalar essa combinação (tool:platform).
+declare -A TOOL_CAVEAT=(
+  [resource-guards:devin]='matcher "Agent" não confirmado no Devin CLI — ver automate-resource-guards/README.md'
+  [review:claude]='automação vem DESLIGADA por padrão — edite automate-review/config.env (AGENT_PR_REVIEW_ENABLED=true) pra ligar'
+  [review:devin]='automação vem DESLIGADA por padrão — edite automate-review/config.env (AGENT_PR_REVIEW_ENABLED=true) pra ligar'
+)
+
+DRY_RUN=false
+ASSUME_YES=false
+
+# --- utilitários --------------------------------------------------------
+
+die() { echo "ERRO: $*" >&2; exit 1; }
+
+require_jq() {
+  command -v jq >/dev/null 2>&1 || die "este instalador precisa de 'jq' (mescla o config JSON existente sem apagar nada). Instale jq e rode de novo."
+}
+
+usage() {
+  cat <<'EOF'
+install.sh — instala os hooks das automações deste repositório.
+
+Uso:
+  ./install.sh                          modo interativo (recomendado)
+  ./install.sh [flags]                  modo direto, sem prompts
+
+Flags:
+  --tools=LISTA        review,security,resource-guards,session-lifecycle ou "all"
+  --platform=claude|devin|both
+  --scope=global|repo
+  --repo=CAMINHO        obrigatório se --scope=repo (default: diretório atual)
+  --dry-run             mostra o que mudaria, não escreve nada
+  --yes                 pula a confirmação
+  --list                lista as ferramentas disponíveis e sai
+  --help                esta ajuda
+
+Exemplos:
+  ./install.sh --tools=all --platform=claude --scope=global
+  ./install.sh --tools=security,resource-guards --platform=both --scope=repo --repo=. --yes
+  ./install.sh --tools=review --platform=devin --scope=repo --dry-run
+EOF
+}
+
+list_tools() {
+  echo "Ferramentas disponíveis:"
+  for key in "${TOOL_KEYS[@]}"; do
+    printf '  %-18s %s\n' "$key" "${TOOL_DESC[$key]}"
+  done
+}
+
+# Args: file
+ensure_json_file() {
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    printf '{}\n' > "$f"
+    return 0
+  fi
+  jq -e . "$f" >/dev/null 2>&1 || die "$f existe mas não é JSON válido — corrija manualmente antes de instalar."
+}
+
+# Args: file
+backup_file() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  cp "$f" "${f}.bak-$(date +%s)"
+}
+
+# Mescla o config de hooks de source_file dentro de target_file, sem apagar
+# nada que já exista (permissions, autoMode, outros hooks manuais etc.) e
+# sem duplicar entradas se rodar de novo (jq "unique" no array final de cada
+# evento). Args: target_file source_file source_shape target_shape
+#   shape ∈ {flat, nested} — nested = eventos dentro de ".hooks"
+merge_hooks_json() {
+  local target_file="$1" source_file="$2" source_shape="$3" target_shape="$4"
+  local tmp src_expr
+  tmp="$(mktemp)"
+  [ "$source_shape" = "nested" ] && src_expr='$srcs[0].hooks' || src_expr='$srcs[0]'
+
+  if [ "$target_shape" = "nested" ]; then
+    jq --slurpfile srcs "$source_file" "
+      (${src_expr}) as \$src
+      | .hooks = (
+          (.hooks // {}) as \$th
+          | reduce (\$src | keys[]) as \$event (\$th;
+              .[\$event] = ((\$th[\$event] // []) + \$src[\$event] | unique)
+            )
+        )
+    " "$target_file" > "$tmp"
+  else
+    jq --slurpfile srcs "$source_file" "
+      (${src_expr}) as \$src
+      | reduce (\$src | keys[]) as \$event (.;
+          .[\$event] = ((.[\$event] // []) + \$src[\$event] | unique)
+        )
+    " "$target_file" > "$tmp"
+  fi
+  mv "$tmp" "$target_file"
+}
+
+# Args: tool_key platform scope [repo_path]
+install_one() {
+  local tool_key="$1" platform="$2" scope="$3" repo_path="${4:-}"
+  local tool_dir="$TOOLS_ROOT/${TOOL_DIR[$tool_key]}"
+  local source_file target_file source_shape target_shape
+
+  if [ "$platform" = "claude" ]; then
+    source_file="$tool_dir/examples/claude-settings.json"
+    source_shape="nested"
+    target_shape="nested"
+    if [ "$scope" = "global" ]; then
+      target_file="$HOME/.claude/settings.json"
+    else
+      target_file="$repo_path/.claude/settings.json"
+    fi
+  else
+    source_file="$tool_dir/examples/devin-hooks.json"
+    source_shape="flat"
+    if [ "$scope" = "global" ]; then
+      target_file="$HOME/.config/devin/config.json"
+      target_shape="nested"
+    else
+      target_file="$repo_path/.devin/hooks.v1.json"
+      target_shape="flat"
+    fi
+  fi
+
+  [ -f "$source_file" ] || die "$source_file não existe (ferramenta '$tool_key' sem exemplo pra '$platform')"
+
+  local target_exists=false
+  [ -f "$target_file" ] && target_exists=true
+
+  # dry-run não toca o filesystem de verdade nenhuma vez — nem mkdir, nem
+  # criar o {} inicial. Simula tudo num arquivo temporário.
+  if [ "$DRY_RUN" = "true" ]; then
+    local tmp; tmp="$(mktemp)"
+    if [ "$target_exists" = "true" ]; then
+      jq -e . "$target_file" >/dev/null 2>&1 || die "$target_file existe mas não é JSON válido — corrija manualmente antes de instalar."
+      cp "$target_file" "$tmp"
+    else
+      printf '{}\n' > "$tmp"
+    fi
+    merge_hooks_json "$tmp" "$source_file" "$source_shape" "$target_shape"
+    if [ "$target_exists" = "true" ] && diff -q "$target_file" "$tmp" >/dev/null 2>&1; then
+      echo "[dry-run] $target_file: ${TOOL_DIR[$tool_key]} ($platform) já instalado, nada mudaria"
+    elif [ "$target_exists" = "true" ]; then
+      echo "[dry-run] $target_file mudaria (${TOOL_DIR[$tool_key]}, $platform):"
+      diff -u "$target_file" "$tmp" | sed 's/^/    /'
+    else
+      echo "[dry-run] $target_file seria CRIADO (${TOOL_DIR[$tool_key]}, $platform):"
+      sed 's/^/    /' "$tmp"
+    fi
+    rm -f "$tmp"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$target_file")" 2>/dev/null || true
+  ensure_json_file "$target_file"
+
+  # Só faz backup + escreve se algo realmente muda — rodar de novo sem
+  # mudança nenhuma não deve acumular backup.
+  local tmp; tmp="$(mktemp)"
+  cp "$target_file" "$tmp"
+  merge_hooks_json "$tmp" "$source_file" "$source_shape" "$target_shape"
+  if diff -q "$target_file" "$tmp" >/dev/null 2>&1; then
+    echo "=    ${TOOL_DIR[$tool_key]} -> $target_file ($platform) — já instalado"
+    rm -f "$tmp"
+    return 0
+  fi
+
+  backup_file "$target_file"
+  mv "$tmp" "$target_file"
+  echo "OK   ${TOOL_DIR[$tool_key]} -> $target_file ($platform)"
+
+  local caveat="${TOOL_CAVEAT[${tool_key}:${platform}]:-}"
+  [ -n "$caveat" ] && echo "     atenção: $caveat"
+}
+
+# --- parsing de flags -----------------------------------------------------
+
+TOOLS_FLAG=""
+PLATFORM_FLAG=""
+SCOPE_FLAG=""
+REPO_FLAG=""
+INTERACTIVE=true
+
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h) usage; exit 0 ;;
+    --list) list_tools; exit 0 ;;
+    --dry-run) DRY_RUN=true; INTERACTIVE=false ;;
+    --yes) ASSUME_YES=true ;;
+    --tools=*) TOOLS_FLAG="${arg#--tools=}"; INTERACTIVE=false ;;
+    --platform=*) PLATFORM_FLAG="${arg#--platform=}"; INTERACTIVE=false ;;
+    --scope=*) SCOPE_FLAG="${arg#--scope=}"; INTERACTIVE=false ;;
+    --repo=*) REPO_FLAG="${arg#--repo=}" ;;
+    *) die "flag desconhecida: $arg (veja --help)" ;;
+  esac
+done
+
+require_jq
+
+# --- modo interativo --------------------------------------------------------
+
+if [ "$INTERACTIVE" = "true" ] && [ -t 0 ]; then
+  echo "=== Instalador de hooks — $(basename "$TOOLS_ROOT") ==="
+  echo
+  list_tools
+  echo "  a) todas"
+  echo
+  read -rp "Quais instalar (números separados por vírgula, ou 'a')? " tools_choice
+  if [ "$tools_choice" = "a" ]; then
+    TOOLS_FLAG="all"
+  else
+    interactive_selected=()
+    IFS=',' read -ra nums <<< "$tools_choice"
+    for n in "${nums[@]}"; do
+      n="$(echo "$n" | tr -d '[:space:]')"
+      idx=1
+      for key in "${TOOL_KEYS[@]}"; do
+        [ "$idx" = "$n" ] && interactive_selected+=("$key")
+        idx=$((idx + 1))
+      done
+    done
+    [ "${#interactive_selected[@]}" -eq 0 ] && die "nenhuma ferramenta válida escolhida"
+    TOOLS_FLAG="$(IFS=,; echo "${interactive_selected[*]}")"
+  fi
+
+  echo
+  echo "Plataforma:"
+  echo "  1) Claude Code"
+  echo "  2) Devin CLI"
+  echo "  3) Ambas"
+  read -rp "Escolha [1-3]: " p_choice
+  case "$p_choice" in
+    1) PLATFORM_FLAG="claude" ;;
+    2) PLATFORM_FLAG="devin" ;;
+    3) PLATFORM_FLAG="both" ;;
+    *) die "opção inválida" ;;
+  esac
+
+  echo
+  echo "Escopo:"
+  echo "  1) Global (~) — vale pra todos os repositórios desta máquina"
+  echo "  2) Este repositório"
+  read -rp "Escolha [1-2]: " s_choice
+  case "$s_choice" in
+    1) SCOPE_FLAG="global" ;;
+    2)
+      SCOPE_FLAG="repo"
+      read -rp "Caminho do repositório [$PWD]: " repo_input
+      REPO_FLAG="${repo_input:-$PWD}"
+      ;;
+    *) die "opção inválida" ;;
+  esac
+  echo
+fi
+
+# --- validação --------------------------------------------------------------
+
+[ -z "$TOOLS_FLAG" ] && die "faltou --tools (ou 'all'). Veja --help."
+[ -z "$PLATFORM_FLAG" ] && die "faltou --platform (claude|devin|both). Veja --help."
+[ -z "$SCOPE_FLAG" ] && die "faltou --scope (global|repo). Veja --help."
+
+case "$PLATFORM_FLAG" in
+  claude) PLATFORMS=(claude) ;;
+  devin) PLATFORMS=(devin) ;;
+  both) PLATFORMS=(claude devin) ;;
+  *) die "--platform inválido: $PLATFORM_FLAG (use claude|devin|both)" ;;
+esac
+
+case "$SCOPE_FLAG" in
+  global) REPO_PATH="" ;;
+  repo)
+    REPO_PATH="${REPO_FLAG:-$PWD}"
+    [ -d "$REPO_PATH" ] || die "--repo aponta pra um diretório que não existe: $REPO_PATH"
+    REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+    ;;
+  *) die "--scope inválido: $SCOPE_FLAG (use global|repo)" ;;
+esac
+
+if [ "$TOOLS_FLAG" = "all" ]; then
+  SELECTED_TOOLS=("${TOOL_KEYS[@]}")
+else
+  IFS=',' read -ra SELECTED_TOOLS <<< "$TOOLS_FLAG"
+  for t in "${SELECTED_TOOLS[@]}"; do
+    [ -n "${TOOL_DIR[$t]:-}" ] || die "ferramenta desconhecida: '$t' (veja --list)"
+  done
+fi
+
+# --- resumo + confirmação ---------------------------------------------------
+
+echo "Vai instalar:"
+for t in "${SELECTED_TOOLS[@]}"; do
+  for p in "${PLATFORMS[@]}"; do
+    if [ "$SCOPE_FLAG" = "global" ]; then
+      echo "  - ${TOOL_DIR[$t]} ($p, global)"
+    else
+      echo "  - ${TOOL_DIR[$t]} ($p, repo=$REPO_PATH)"
+    fi
+  done
+done
+echo
+
+if [ "$DRY_RUN" != "true" ] && [ "$ASSUME_YES" != "true" ]; then
+  read -rp "Confirma? [s/N] " confirm
+  case "$confirm" in
+    s|S|sim|y|Y|yes) ;;
+    *) echo "Cancelado."; exit 0 ;;
+  esac
+fi
+
+# --- execução -----------------------------------------------------------
+
+for t in "${SELECTED_TOOLS[@]}"; do
+  for p in "${PLATFORMS[@]}"; do
+    install_one "$t" "$p" "$SCOPE_FLAG" "$REPO_PATH"
+  done
+done
+
+if [ "$DRY_RUN" != "true" ]; then
+  echo
+  echo "Pronto."
+fi
