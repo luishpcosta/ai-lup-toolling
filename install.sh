@@ -41,8 +41,30 @@ ASSUME_YES=false
 
 die() { echo "ERRO: $*" >&2; exit 1; }
 
-require_jq() {
-  command -v jq >/dev/null 2>&1 || die "este instalador precisa de 'jq' (mescla o config JSON existente sem apagar nada). Instale jq e rode de novo."
+# Mesclar JSON com segurança (sem apagar nada, sem corromper) exige um
+# parser de verdade — não dá pra fazer com grep/sed como os guards fazem na
+# LEITURA de um campo. jq é a 1ª escolha; python3 é o fallback (mesma
+# lógica, ver install_merge.py). Sem os dois, erro claro em vez de arriscar
+# escrever um JSON quebrado.
+MERGE_ENGINE=""
+detect_merge_engine() {
+  if command -v jq >/dev/null 2>&1; then
+    MERGE_ENGINE="jq"
+  elif command -v python3 >/dev/null 2>&1; then
+    MERGE_ENGINE="python3"
+  else
+    die "precisa de 'jq' OU 'python3' pra mesclar o config JSON existente sem apagar nada. Instale um dos dois e rode de novo."
+  fi
+}
+
+# Args: file
+is_valid_json() {
+  local f="$1"
+  if [ "$MERGE_ENGINE" = "jq" ]; then
+    jq -e . "$f" >/dev/null 2>&1
+  else
+    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" >/dev/null 2>&1
+  fi
 }
 
 usage() {
@@ -84,7 +106,7 @@ ensure_json_file() {
     printf '{}\n' > "$f"
     return 0
   fi
-  jq -e . "$f" >/dev/null 2>&1 || die "$f existe mas não é JSON válido — corrija manualmente antes de instalar."
+  is_valid_json "$f" || die "$f existe mas não é JSON válido — corrija manualmente antes de instalar."
 }
 
 # Args: file
@@ -94,13 +116,24 @@ backup_file() {
   cp "$f" "${f}.bak-$(date +%s)"
 }
 
-# Mescla o config de hooks de source_file dentro de target_file, sem apagar
-# nada que já exista (permissions, autoMode, outros hooks manuais etc.) e
-# sem duplicar entradas se rodar de novo (jq "unique" no array final de cada
-# evento). Args: target_file source_file source_shape target_shape
+# Mescla o config de hooks de source_file DENTRO de target_file (escreve o
+# resultado em target_file), sem apagar nada que já exista (permissions,
+# autoMode, outros hooks manuais etc.) e sem duplicar entradas se rodar de
+# novo (dedup + ordena por JSON canônico do item — idêntico nas duas
+# engines). Despacha pra jq ou python3 conforme detect_merge_engine().
+# Args: target_file source_file source_shape target_shape
 #   shape ∈ {flat, nested} — nested = eventos dentro de ".hooks"
 merge_hooks_json() {
   local target_file="$1" source_file="$2" source_shape="$3" target_shape="$4"
+
+  if [ "$MERGE_ENGINE" = "python3" ]; then
+    local out; out="$(mktemp)"
+    python3 "$TOOLS_ROOT/install_merge.py" "$target_file" "$source_file" "$source_shape" "$target_shape" "$out" \
+      || { rm -f "$out"; die "falha ao mesclar $source_file em $target_file (python3)"; }
+    mv "$out" "$target_file"
+    return 0
+  fi
+
   local tmp src_expr
   tmp="$(mktemp)"
   [ "$source_shape" = "nested" ] && src_expr='$srcs[0].hooks' || src_expr='$srcs[0]'
@@ -114,14 +147,14 @@ merge_hooks_json() {
               .[\$event] = ((\$th[\$event] // []) + \$src[\$event] | unique)
             )
         )
-    " "$target_file" > "$tmp"
+    " "$target_file" > "$tmp" || { rm -f "$tmp"; die "falha ao mesclar $source_file em $target_file (jq)"; }
   else
     jq --slurpfile srcs "$source_file" "
       (${src_expr}) as \$src
       | reduce (\$src | keys[]) as \$event (.;
           .[\$event] = ((.[\$event] // []) + \$src[\$event] | unique)
         )
-    " "$target_file" > "$tmp"
+    " "$target_file" > "$tmp" || { rm -f "$tmp"; die "falha ao mesclar $source_file em $target_file (jq)"; }
   fi
   mv "$tmp" "$target_file"
 }
@@ -163,7 +196,7 @@ install_one() {
   if [ "$DRY_RUN" = "true" ]; then
     local tmp; tmp="$(mktemp)"
     if [ "$target_exists" = "true" ]; then
-      jq -e . "$target_file" >/dev/null 2>&1 || die "$target_file existe mas não é JSON válido — corrija manualmente antes de instalar."
+      is_valid_json "$target_file" || die "$target_file existe mas não é JSON válido — corrija manualmente antes de instalar."
       cp "$target_file" "$tmp"
     else
       printf '{}\n' > "$tmp"
@@ -226,7 +259,7 @@ for arg in "$@"; do
   esac
 done
 
-require_jq
+detect_merge_engine
 
 # --- modo interativo --------------------------------------------------------
 

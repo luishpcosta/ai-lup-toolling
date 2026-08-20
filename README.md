@@ -34,6 +34,7 @@ via a documentação oficial de cada plataforma e o que ainda precisa de verific
 
 Instala uma ou várias ferramentas de uma vez, pra Claude Code e/ou Devin CLI, a nível global (`~`)
 ou de um repositório específico — mesclando no config já existente (nunca apaga nada, faz backup
-antes de mudar algo, roda de novo sem duplicar). Precisa de `jq`.
+antes de mudar algo, roda de novo sem duplicar). Precisa de `jq` OU `python3` (usa o que achar
+primeiro — mesclar JSON com segurança exige um parser de verdade, não dá com grep/sed puro).
 
 Veja o README de cada ferramenta para detalhes de configuração além da instalação.
