@@ -1,0 +1,17 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "exec",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "$HOME/development/tools/automate-security/hooks/guards/credential-exfil-guard.sh"
+        },
+        {
+          "type": "command",
+          "command": "$HOME/development/tools/automate-security/hooks/guards/db-connect-guard.sh"
+        }
+      ]
+    }
+  ]
+}
