@@ -1,19 +1,11 @@
 #!/usr/bin/env bash
-# compact-checkpoint.sh — cria um commit de checkpoint automático quando a
-# sessão do agente compacta o contexto, pra garantir que mudanças não
-# commitadas sobrevivam mesmo que a compactação faça a agente perder noção
-# de edições recentes. Recuperação trivial: "git log --oneline -5". Portado
-# de yurukusa/cc-safe-setup (examples/pre-compact-checkpoint.sh).
+# Commit de checkpoint automático quando a sessão compacta o contexto —
+# recuperação: "git log --oneline -5".
 #
-# TRIGGER: PreCompact no Claude Code (fecha bem antes da compactação
-#   acontecer) / PostCompaction no Devin CLI (fecha logo depois). Mesmo
-#   script serve pros dois — ver README.md > "PreCompact vs PostCompaction"
-#   pra por que isso é seguro (a compactação não toca arquivos em disco).
-# MATCHER: nenhum suporte a matcher documentado em nenhuma plataforma —
-#   sempre dispara no evento.
-#
-# DECISÃO/BLOQUEIO: nenhum — hook de notificação/melhor esforço, nunca
-# bloqueia a sessão (sempre "exit 0", mesmo em erro do git).
+# TRIGGER: PreCompact (Claude Code) | PostCompaction (Devin CLI) — mesmo
+#   script serve pros dois, compactação não altera arquivos em disco (ver
+#   README > "PreCompact vs PostCompaction").
+# Nunca bloqueia — sempre exit 0.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +14,6 @@ source "$SCRIPT_DIR/../lib.sh"
 
 is_checkpoint_enabled || exit 0
 
-# Não é repositório git — nada a fazer.
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
 PORCELAIN="$(git status --porcelain 2>/dev/null)"
@@ -35,12 +26,11 @@ MESSAGE="$(format_checkpoint_commit_message "$COUNT" "$TIMESTAMP")"
 git add -A 2>/dev/null
 git commit -m "$MESSAGE" --no-verify >/dev/null 2>&1
 
-# Lida depois do commit de propósito: num repositório sem nenhum commit
-# ainda, "git rev-parse --abbrev-ref HEAD" antes do primeiro commit pode
-# devolver o literal "HEAD" em vez do nome real da branch (achado testando
-# manualmente esta versão) — depois do commit acima, sempre resolve certo.
+# Depois do commit de propósito: antes do 1º commit, "rev-parse
+# --abbrev-ref HEAD" pode devolver o literal "HEAD" em vez do nome real.
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 
 format_checkpoint_notice "$COUNT" "$BRANCH" >&2
+audit_log "compact-checkpoint" ACTION "commit criado ($COUNT arquivos) em $BRANCH"
 
 exit 0

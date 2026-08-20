@@ -75,6 +75,18 @@ assert_eq "warmup_seconds: lido do config.env" "7" "$(warmup_seconds)"
 rm -f "$_tmp_config"
 unset SESSION_LIFECYCLE_CHECKPOINT_ENABLED SESSION_LIFECYCLE_WARMUP_SECONDS
 
+# --- format_audit_line / audit_log ------------------------------------------
+
+assert_eq "format_audit_line: com detail" \
+  "[2026-01-01T00:00:00-03:00] guard=compact-checkpoint decision=ACTION detail=commit criado" \
+  "$(format_audit_line "2026-01-01T00:00:00-03:00" "compact-checkpoint" "ACTION" "commit criado")"
+
+_audit_marker="teste-run-tests-$$"
+audit_log "test-probe" "ACTION" "$_audit_marker"
+assert_eq "audit_log: grava uma linha em data/audit.log" \
+  "1" "$(grep -c "$_audit_marker" "$(audit_log_path)" 2>/dev/null || echo 0)"
+sed -i "/$_audit_marker/d" "$(audit_log_path)" 2>/dev/null || true
+
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."
 [ "$fail" -eq 0 ]

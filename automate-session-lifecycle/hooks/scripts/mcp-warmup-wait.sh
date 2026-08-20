@@ -1,21 +1,10 @@
 #!/usr/bin/env bash
-# mcp-warmup-wait.sh — espera um curto período no início da sessão pra dar
-# tempo dos servidores MCP configurados subirem, evitando erro de
-# "ferramenta indisponível" no primeiro turno (comum em sessões disparadas
-# via trigger remoto/cron, onde a primeira mensagem chega antes do MCP
-# estar pronto). Portado de yurukusa/cc-safe-setup
-# (examples/mcp-warmup-wait.sh).
+# Espera um curto período no início da sessão pros servidores MCP subirem,
+# evitando erro de "ferramenta indisponível" no primeiro turno.
 #
-# TRIGGER: SessionStart — mesmo nome de evento confirmado nas duas
-#   plataformas (docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks).
-# MATCHER: nenhum.
-#
-# Só espera se algum arquivo de config candidato realmente declarar
-# "mcpServers" — sessão sem MCP configurado não paga o custo do warmup.
-# Verifica múltiplos caminhos candidatos (Claude Code E Devin CLI, ver
-# README.md > "Onde procurar mcpServers") porque, diferente do
-# cc-safe-setup original (que só olhava ~/.claude/settings.json), esta
-# versão também roda sob Devin CLI, que pode ter a config em outro lugar.
+# TRIGGER: SessionStart (mesmo nome nas duas plataformas). Só espera se
+#   algum arquivo de config candidato declarar "mcpServers" (ver README >
+#   "Onde procurar mcpServers" pra lista de caminhos, Claude Code + Devin).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,9 +15,6 @@ is_warmup_enabled || exit 0
 
 SECONDS_TO_WAIT="$(warmup_seconds)"
 
-# Caminhos candidatos de config MCP: Claude Code (global e por-projeto) +
-# Devin CLI (global e por-projeto, conforme "Configuration Locations" da
-# doc oficial). O primeiro que existir E declarar "mcpServers" já basta.
 CANDIDATES=(
   "$HOME/.claude/settings.json"
   "$HOME/.claude/settings.local.json"
@@ -55,5 +41,6 @@ done
 
 sleep "$SECONDS_TO_WAIT"
 format_warmup_notice "$SECONDS_TO_WAIT" >&2
+audit_log "mcp-warmup-wait" ACTION "esperou ${SECONDS_TO_WAIT}s (config: $candidate)"
 
 exit 0

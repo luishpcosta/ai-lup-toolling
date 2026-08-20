@@ -1,27 +1,9 @@
 #!/usr/bin/env bash
-# Funções puras e testáveis dos guards de RECURSO/ORÇAMENTO PreToolUse —
-# categoria distinta de automate-security/: aqui o risco não é segurança
-# (exfiltração, acesso indevido), é a agente estourar recurso/custo
-# (spawnar subagentes demais em paralelo). Mesmo mecanismo de bloqueio
-# (PreToolUse, exit 2), origem/propósito diferentes — por isso pasta própria,
-# não misturada em automate-security/ (ver README.md > "Por que uma pasta
-# própria, separada de automate-security/").
-#
-# Vive em ~/development/tools/automate-resource-guards/hooks/, fora de
-# qualquer repositório — cada repo que usa esta automação aponta seu hook
-# para este local compartilhado.
-#
-# Origem: subagent-budget-guard.sh, portado de yurukusa/cc-safe-setup, com
-# a lógica de contagem/expiração extraída em funções puras que operam sobre
-# TEXTO (conteúdo do arquivo de tracking como string), não sobre o
-# filesystem diretamente — a leitura/escrita real do arquivo fica só no
-# entrypoint (ver hooks/guards/subagent-budget-guard.sh), mesma separação
-# usada em automate-review/hooks/lib.sh e automate-security/hooks/lib.sh.
+# Funções puras + leitura de stdin + log de auditoria do guard de
+# recurso/orçamento (limite de subagentes ativos). Testes:
+# hooks/tests/run-tests.sh.
 
-# --- Leitura do payload do hook (stdin JSON) -----------------------------
-# Idêntica a automate-security/hooks/lib.sh — duplicada de propósito (cada
-# pasta de ferramenta é independente e instalável sozinha, ver
-# tools/README.md).
+# --- stdin JSON -----------------------------------------------------------
 
 extract_json_string_field() {
   local json="$1" field="$2"
@@ -40,12 +22,11 @@ read_tool_name() {
   fi
 }
 
-# --- Contagem/expiração de subagentes ativos (funções puras) ------------
-# O arquivo de tracking é um log append-only de "<timestamp_unix>|agent" por
-# linha — uma linha por spawn. "Ativo" = spawnado há menos de ttl_seconds.
+# --- Contagem/expiração de subagentes ---------------------------------------
+# Tracker: log append-only "<timestamp_unix>|agent" por linha, 1 por spawn.
+# "Ativo" = spawnado há menos de ttl_seconds.
 
-# Conta quantas linhas do tracker (texto multi-linha, uma entrada
-# "<ts>|agent" por linha) ainda estão dentro do TTL. Args: tracker_content now ttl_seconds
+# Args: tracker_content now ttl_seconds -> quantas entradas ainda dentro do TTL
 count_active_entries() {
   local content="$1" now="$2" ttl="$3"
   local count=0 line ts age
@@ -60,9 +41,7 @@ count_active_entries() {
   echo "$count"
 }
 
-# Devolve só as linhas do tracker ainda dentro do TTL (poda as expiradas) —
-# usado pra reescrever o arquivo depois de cada spawn, sem deixá-lo crescer
-# pra sempre. Args: tracker_content now ttl_seconds
+# Args: tracker_content now ttl_seconds -> só as linhas ainda dentro do TTL (poda)
 prune_active_entries() {
   local content="$1" now="$2" ttl="$3"
   local line ts age
@@ -76,7 +55,7 @@ prune_active_entries() {
   done <<< "$content"
 }
 
-# --- Config ---------------------------------------------------------------
+# --- Config -----------------------------------------------------------------
 
 load_config_env() {
   local config_file="$1"
@@ -104,22 +83,40 @@ is_resource_guard_enabled() {
   [ "${RESOURCE_GUARD_ENABLED:-true}" != "false" ]
 }
 
-# Máximo de subagentes ativos simultâneos (default 5, override via
-# RESOURCE_GUARD_MAX_SUBAGENTS no config.env ou no ambiente).
 resource_guard_max_subagents() {
   echo "${RESOURCE_GUARD_MAX_SUBAGENTS:-5}"
 }
 
-# TTL (segundos) até um subagente ser considerado "não mais ativo" pra fins
-# de contagem — default 1800s (30min), igual ao cc-safe-setup original.
 resource_guard_ttl_seconds() {
   echo "${RESOURCE_GUARD_TTL_SECONDS:-1800}"
 }
 
-# Caminho do arquivo de tracking — compartilhado por máquina, fora desta
-# pasta de ferramenta (mesmo caminho usado pelo script original do
-# cc-safe-setup, ~/.claude/active-agents, pra não perder histórico de quem
-# já tinha essa automação rodando).
+# Compartilhado por máquina, fora desta pasta de ferramenta.
 resource_guard_tracker_path() {
   echo "${RESOURCE_GUARD_TRACKER_PATH:-$HOME/.claude/active-agents}"
+}
+
+# --- Log de auditoria -------------------------------------------------------
+# data/audit.log — só BLOCKED (spawn negado por orçamento). Best-effort.
+
+_data_dir() {
+  local dir
+  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/data"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "$dir"
+}
+
+audit_log_path() {
+  printf '%s/audit.log' "$(_data_dir)"
+}
+
+# Args: timestamp_iso guard decision detail
+format_audit_line() {
+  local ts="$1" guard="$2" decision="$3" detail="${4:-}"
+  printf '[%s] guard=%s decision=%s%s\n' "$ts" "$guard" "$decision" "${detail:+ detail=$detail}"
+}
+
+# Args: guard decision [detail]
+audit_log() {
+  format_audit_line "$(date -Iseconds)" "$1" "$2" "${3:-}" >> "$(audit_log_path)" 2>/dev/null || true
 }

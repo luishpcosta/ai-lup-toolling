@@ -1,21 +1,8 @@
 #!/usr/bin/env bash
-# credential-exfil-guard.sh — bloqueia comandos que caçam/exfiltram
-# credenciais. Portado de yurukusa/cc-safe-setup (examples/
-# credential-exfil-guard.sh) para este pacote, com as detecções extraídas
-# em funções puras testáveis (ver ../lib.sh) e leitura de stdin sem
-# dependência obrigatória de jq (fallback bash/grep/sed, mesmo padrão de
-# automate-review/hooks/lib.sh — jq não vem por padrão no Git for
-# Windows/MSYS2).
+# Bloqueia comandos que caçam/exfiltram credenciais.
 #
-# TRIGGER: PreToolUse
-# MATCHER: "Bash" no Claude Code, "exec" no Devin CLI (ver
-#   ../../examples/{claude-settings,devin-hooks}.json)
-#
-# Compatível com Claude Code e Devin CLI: os dois bloqueiam a ferramenta
-# com exit code 2 num hook PreToolUse (confirmado em
-# docs.devin.ai/cli/extensibility/hooks/{overview,lifecycle-hooks}) e os
-# dois entregam o payload do evento via stdin JSON com o mesmo campo
-# tool_input.command.
+# TRIGGER: PreToolUse | MATCHER: "Bash" (Claude Code), "exec" (Devin CLI)
+# Bloqueia via exit 2, igual nas duas plataformas.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,72 +15,36 @@ INPUT="$(cat)"
 COMMAND="$(read_tool_command "$INPUT")"
 [ -z "$COMMAND" ] && exit 0
 
-if is_secret_grep_env_dump "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: caça de credencial via variáveis de ambiente" >&2
-  exit 2
-fi
+GUARD="credential-exfil-guard"
 
-# Não é bloqueio — mesmo um termo não-secreto pipado de env/printenv/set pra
-# grep imprime o VALOR que bater (#69053: "env | grep JIRA" vazou
-# JIRA_API_TOKEN). Aviso, não bloqueio, pra não travar "env | grep PATH".
-if is_any_grep_env_dump "$COMMAND"; then
-  echo "WARNING [credential-exfil-guard]: despejar o ambiente pra dentro de um grep imprime os valores que baterem no transcript/API; se a variável casada guardar um token, ele fica exposto. Pra achar ONDE uma credencial está configurada, faça grep no NOME da variável em arquivos de config, não no dump do ambiente." >&2
+# Bate no padrão de $1 -> imprime BLOCKED, loga e sai com exit 2.
+block_if() {
+  "$1" "$COMMAND" || return 0
+  echo "BLOCKED [$GUARD]: $2" >&2
+  audit_log "$GUARD" BLOCKED "$2 | cmd=$COMMAND"
+  exit 2
+}
+
+# Bate no padrão de $1 -> imprime WARNING, loga e sai com exit 0 (não bloqueia).
+warn_if() {
+  "$1" "$COMMAND" || return 0
+  echo "WARNING [$GUARD]: $2" >&2
+  audit_log "$GUARD" WARNING "$2 | cmd=$COMMAND"
   exit 0
-fi
+}
 
-if is_credential_file_search "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: caça de credencial via busca no sistema de arquivos" >&2
-  exit 2
-fi
-
-if is_ssh_credential_read "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: acesso direto a credencial SSH" >&2
-  exit 2
-fi
-
-if is_system_credential_read "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: acesso a arquivo de credencial do sistema" >&2
-  exit 2
-fi
-
-if is_cloud_credential_read "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: acesso a credencial de provedor de nuvem" >&2
-  exit 2
-fi
-
-if is_browser_credential_hunt "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: caça de credencial de navegador" >&2
-  exit 2
-fi
-
-if is_bare_env_dump "$COMMAND"; then
-  echo "WARNING [credential-exfil-guard]: despejar todas as variáveis de ambiente pode expor segredos" >&2
-  exit 0
-fi
-
-if is_credential_file_upload "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: exfiltração de arquivo de credencial via upload HTTP" >&2
-  exit 2
-fi
-
-if is_credential_file_piped_to_network "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: arquivo de credencial pipado pra cliente HTTP" >&2
-  exit 2
-fi
-
-if is_macos_keychain_secret_extraction "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: extração de token secreto do keychain do macOS" >&2
-  exit 2
-fi
-
-if is_keychain_piped_to_network "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: segredo do keychain pipado pra cliente de rede (possível exfiltração)" >&2
-  exit 2
-fi
-
-if is_secret_env_piped_to_network "$COMMAND"; then
-  echo "BLOCKED [credential-exfil-guard]: variável de ambiente secreta pipada pra cliente de rede (possível exfiltração)" >&2
-  exit 2
-fi
+block_if is_secret_grep_env_dump  "caça de credencial via variável de ambiente"
+warn_if  is_any_grep_env_dump     "grep sobre dump de ambiente vaza valor mesmo sem termo óbvio (#69053)"
+block_if is_credential_file_search             "caça de credencial via busca de arquivo"
+block_if is_ssh_credential_read                "acesso direto a credencial SSH"
+block_if is_system_credential_read             "acesso a credencial do sistema (/etc/shadow etc.)"
+block_if is_cloud_credential_read              "acesso a credencial de nuvem (aws/gcloud/kube)"
+block_if is_browser_credential_hunt            "caça de credencial de navegador"
+warn_if  is_bare_env_dump                      "dump completo do ambiente pode expor segredos"
+block_if is_credential_file_upload             "upload de arquivo de credencial via HTTP"
+block_if is_credential_file_piped_to_network   "arquivo de credencial pipado pra cliente de rede"
+block_if is_macos_keychain_secret_extraction   "extração de segredo do keychain macOS"
+block_if is_keychain_piped_to_network          "segredo do keychain pipado pra cliente de rede"
+block_if is_secret_env_piped_to_network        "variável de ambiente secreta pipada pra cliente de rede"
 
 exit 0

@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
-# subagent-budget-guard.sh — bloqueia spawn de subagente quando já há
-# MAX_SUBAGENTS ativos (spawnados há menos de TTL_SECONDS). Portado de
-# yurukusa/cc-safe-setup (examples/subagent-budget-guard.sh) — mesma lógica
-# de contagem/expiração, extraída em funções puras testáveis (ver ../lib.sh).
+# Bloqueia spawn de subagente quando já há MAX ativos (spawnados há menos
+# de TTL_SECONDS).
 #
-# TRIGGER: PreToolUse
-# MATCHER: "Agent" no Claude Code (nome confirmado — é a ferramenta usada
-#   nesta própria sessão pra spawnar subagentes). NÃO CONFIRMADO no Devin
-#   CLI: a documentação pública consultada (docs.devin.ai/cli/extensibility/
-#   hooks/{overview,lifecycle-hooks}) não lista um nome de ferramenta
-#   distinto para spawn de subagente — ver README.md > "O que não está
-#   confirmado" antes de confiar no matcher do examples/devin-hooks.json.
+# TRIGGER: PreToolUse | MATCHER: "Agent" (Claude Code, confirmado). Nome no
+#   Devin CLI NÃO CONFIRMADO — ver README antes de usar lá.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,10 +14,6 @@ is_resource_guard_enabled || exit 0
 
 INPUT="$(cat)"
 TOOL="$(read_tool_name "$INPUT")"
-# Nome exato confirmado só para o Claude Code ("Agent"). Ver nota de matcher
-# acima — se o Devin CLI expuser outro nome de ferramenta pra spawn de
-# subagente, ajuste esta comparação (ou generalize para um match parcial)
-# depois de confirmar via "/hooks" no Devin.
 [ "$TOOL" = "Agent" ] || exit 0
 
 MAX="$(resource_guard_max_subagents)"
@@ -39,9 +28,9 @@ CONTENT=""
 ACTIVE="$(count_active_entries "$CONTENT" "$NOW" "$TTL")"
 
 if [ "$ACTIVE" -ge "$MAX" ]; then
-  echo "BLOCKED [subagent-budget-guard]: $ACTIVE subagentes ativos (máximo: $MAX)." >&2
-  echo "Espere os agentes existentes terminarem antes de spawnar mais." >&2
-  echo "Override: RESOURCE_GUARD_MAX_SUBAGENTS=10 em config.env" >&2
+  MSG="$ACTIVE subagentes ativos (máximo: $MAX) — espere terminarem"
+  echo "BLOCKED [subagent-budget-guard]: $MSG" >&2
+  audit_log "subagent-budget-guard" BLOCKED "$MSG"
   exit 2
 fi
 

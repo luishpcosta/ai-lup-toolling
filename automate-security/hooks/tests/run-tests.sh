@@ -166,6 +166,25 @@ unset SECURITY_GUARD_ENABLED
 assert_eq "is_security_guard_enabled: true por default (sem config nenhuma)" \
   "0" "$(is_security_guard_enabled; echo $?)"
 
+# --- format_audit_line / audit_log ------------------------------------------
+
+assert_eq "format_audit_line: com detail" \
+  "[2026-01-01T00:00:00-03:00] guard=credential-exfil-guard decision=BLOCKED detail=cmd=cat ~/.ssh/id_rsa" \
+  "$(format_audit_line "2026-01-01T00:00:00-03:00" "credential-exfil-guard" "BLOCKED" "cmd=cat ~/.ssh/id_rsa")"
+
+assert_eq "format_audit_line: sem detail (sem 'detail=' sobrando)" \
+  "[2026-01-01T00:00:00-03:00] guard=db-connect-guard decision=WARNING" \
+  "$(format_audit_line "2026-01-01T00:00:00-03:00" "db-connect-guard" "WARNING")"
+
+# audit_log() escreve no data/audit.log real da ferramenta (mesmo caminho
+# que os guards usam em produção) — grava, confere, e remove só a linha de
+# teste ao final pra não sujar auditoria real.
+_audit_marker="teste-run-tests-$$"
+audit_log "test-probe" "BLOCKED" "$_audit_marker"
+assert_eq "audit_log: grava uma linha em data/audit.log" \
+  "1" "$(grep -c "$_audit_marker" "$(audit_log_path)" 2>/dev/null || echo 0)"
+sed -i "/$_audit_marker/d" "$(audit_log_path)" 2>/dev/null || true
+
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."
 [ "$fail" -eq 0 ]
