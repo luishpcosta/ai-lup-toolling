@@ -247,6 +247,17 @@ assert_eq "guard: aviso seguido de comando bloqueável ainda bloqueia (exit 2)" 
 
 assert_eq "guard: comando benigno passa (exit 0)" \
   "0" "$(_run_guard '{"tool_name":"Bash","tool_input":{"command":"npm run build"}}')"
+
+# --- regressão: os dois guards cobrem os mesmos matchers no exemplo Claude ---
+# credential-exfil-guard.sh já esteve registrado só em "Bash", enquanto
+# db-connect-guard.sh cobria "Bash|PowerShell" — num agente rodando no
+# Windows, um comando de exfiltração de credencial via PowerShell passava
+# batido pelo guard de credencial. Os dois hooks têm que compartilhar o
+# mesmo matcher.
+
+_claude_example="$SCRIPT_DIR/../../examples/claude-settings.json"
+assert_eq "claude-settings.json: credential-exfil-guard e db-connect-guard cobrem o mesmo matcher (Bash|PowerShell)" \
+  "2" "$(grep -c '"matcher": "Bash|PowerShell"' "$_claude_example")"
 echo ""
 echo "Resultado: $pass passaram, $fail falharam."
 [ "$fail" -eq 0 ]

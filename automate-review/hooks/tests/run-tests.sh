@@ -126,6 +126,27 @@ assert_eq "render_platform_cmd_line: {repo} ausente (2º arg omitido) vira strin
 
 AGENT_PR_REVIEW_PLATFORM_CMD=()
 
+# --- invariante: sessão sempre nova, nunca --continue/--resume ---
+# claude -p roda direto em background sem terminal pra responder um prompt de
+# permissão/confirmação; retomar sessão (--continue/--resume) misturaria
+# contexto de pushes diferentes na mesma branch. Guarda de regressão pro
+# default de lib.sh e pra config.env (recarregado abaixo).
+
+(
+  # Subshell: carrega o config.env real (não o fallback embutido em lib.sh) —
+  # é o que efetivamente vai rodar em produção se o usuário não editar o
+  # arquivo — sem contaminar variáveis globais usadas pelos testes abaixo
+  # (ex.: AGENT_PR_REVIEW_TERMINAL_CMD, cujo default os testes de
+  # "TERMINAL_CMD" mais abaixo ainda esperam intacto).
+  AGENT_PR_REVIEW_PLATFORM_CMD=()
+  load_config_env "$SCRIPT_DIR/../../config.env"
+  _default_cmd_line="$(render_platform_cmd_line 'https://github.com/x/y/pull/1' 'x/y')"
+  printf '%s' "$_default_cmd_line" | grep -qE -- '--continue|--resume'
+)
+if [ "$?" -eq 0 ]; then r=1; else r=0; fi
+assert_eq "AGENT_PR_REVIEW_PLATFORM_CMD default (config.env): nunca contém --continue/--resume" "0" "$r"
+AGENT_PR_REVIEW_PLATFORM_CMD=()
+
 # --- classify_state ---
 
 assert_eq "classify_state: qualquer falha vence, mesmo com sucessos" \
