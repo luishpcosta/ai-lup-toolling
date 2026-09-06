@@ -42,7 +42,13 @@ load_config_env() {
 #     literais "{pr_url}" e "{repo}", substituídos em render_platform_cmd_line()
 #     pela URL real da PR e por "owner/repo" — permite usar Claude Code, Devin
 #     CLI ou qualquer outra ferramenta de linha de comando, desde que o
-#     usuário configure o comando real dela.
+#     usuário configure o comando real dela. Roda direto no processo do
+#     poller (sem janela nova, ver poll-and-review.sh) com cwd no repositório
+#     que fez o push — por isso o default usa "claude -p" (sessão nova,
+#     não-interativa) em vez do modo interativo de antes. INVARIANTE: nunca
+#     acrescentar "--continue"/"--resume" aqui — cada push precisa disparar
+#     uma sessão stateless, sem herdar contexto de pushes anteriores na mesma
+#     branch.
 #   - AGENT_PR_REVIEW_AUTOMERGE_REPOS: lista opt-in de "owner/repo" — ver
 #     is_automerge_repo() abaixo. Vazia por padrão (nenhum merge automático
 #     até ser configurado explicitamente).
@@ -61,7 +67,24 @@ if [ "${#AGENT_PR_REVIEW_TERMINAL_CMD[@]}" -eq 0 ]; then
   AGENT_PR_REVIEW_TERMINAL_CMD=('C:\Program Files\Git\usr\bin\bash.exe' -i -l)
 fi
 if [ "${#AGENT_PR_REVIEW_PLATFORM_CMD[@]}" -eq 0 ]; then
-  AGENT_PR_REVIEW_PLATFORM_CMD=(claude '/review-pr faça revisão da pr aberta em {pr_url} e submeta os comentarios e relatório da validação')
+  AGENT_PR_REVIEW_PLATFORM_CMD=(
+    claude -p
+    'Contexto: execução automática, não-interativa, disparada porque a CI passou na PR {pr_url} do repositório {repo}. Não há usuário observando esta sessão — não peça confirmação nem espere aprovação, publique diretamente. Primeiro, veja a descrição atual da PR (gh pr view {pr_url} --json body) e, se estiver vazia ou não refletir o que foi feito, gere uma nova a partir de git log/git diff da branch atual e grave com gh pr edit {pr_url} --body-file -. Depois, revise o código desta PR (use a skill /review-pr se este projeto tiver uma instalada; senão, revise você mesmo o diff) e publique os comentários/relatório diretamente, sem esperar aprovação.'
+    --permission-mode dontAsk
+    --allowedTools
+    'Bash(gh pr view *)'
+    'Bash(gh pr diff *)'
+    'Bash(gh pr edit *)'
+    'Bash(gh pr comment *)'
+    'Bash(gh pr review *)'
+    'Bash(git log *)'
+    'Bash(git diff *)'
+    'Bash(git show *)'
+    'Bash(git status *)'
+    Read
+    Glob
+    Grep
+  )
 fi
 
 # Classifica o ambiente a partir de entradas explícitas — pura, testável sem

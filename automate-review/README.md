@@ -1,12 +1,14 @@
 # automate-review
 
 Review de PR assíncrono depois do push. Um hook detecta `git push` numa branch `feature/*`,
-acompanha a CI em segundo plano e abre uma janela com o resultado — invocando a skill
-[`review-pr`](.claude/skills/review-pr) quando a CI passa. Compatível com Claude Code, Devin CLI ou
-qualquer ferramenta de linha de comando que você configure.
+acompanha a CI em segundo plano e, quando a CI passa, roda `claude -p` (ou o comando que você
+configurar) **direto em background** no repositório do push — sem abrir janela nenhuma — para
+popular a descrição da PR e revisar o código. Compatível com Claude Code, Devin CLI ou qualquer
+ferramenta de linha de comando que você configure.
 
 Esta pasta é compartilhada por máquina, não por repositório: todo repo que registra o hook usa os
-mesmos scripts e a mesma skill.
+mesmos scripts. A skill de revisão (`/review-pr` ou outra) é escolha de cada repositório — veja
+"Plataforma agêntica" abaixo.
 
 ## Como funciona
 
@@ -15,9 +17,13 @@ git push (feature/*)
   └─ post-push-review.sh          hook PostToolUse: confere gate, retorna em ~ms
        └─ poll-and-review.sh      background (setsid): resolve repo/commit via git+gh
             ├─ long-polling dos check-runs → success | failure | timeout
-            ├─ repo com automerge?  → comenta na PR + gh pr merge, fim
-            ├─ gate por branch?     → acima do limite, para aqui
-            └─ open-terminal.sh    → janela com o log + a revisão já invocada
+            ├─ repo com automerge?     → comenta na PR + gh pr merge, fim
+            ├─ gate por branch?        → acima do limite, para aqui
+            ├─ success com PR aberta   → roda AGENT_PR_REVIEW_PLATFORM_CMD DIRETO
+            │                            (sem janela), cwd no repo do push
+            │     ├─ comando terminou OK  → fim, só log
+            │     └─ comando falhou       → open-terminal.sh (alerta com o erro)
+            └─ failure | timeout | success sem PR → open-terminal.sh (mensagem informativa)
 ```
 
 **Vem desligado**: mude `AGENT_PR_REVIEW_ENABLED` para `true` em `config.env` para ligar nesta
@@ -55,6 +61,11 @@ Variável já exportada no ambiente vence sobre o arquivo.
 
 ### Terminal (`AGENT_PR_REVIEW_TERMINAL_CMD`)
 
+Só é usado quando **não** dá pra terminar silenciosamente: CI falhou, deu timeout, a CI passou mas
+nenhuma PR foi encontrada ainda, ou `AGENT_PR_REVIEW_PLATFORM_CMD` falhou (exit != 0) — nesse último
+caso é o jeito de "chamar atenção" para um erro que aconteceu em background. No caminho feliz
+(CI passou, PR encontrada, comando da plataforma terminou com sucesso) nenhuma janela abre.
+
 Array bash — cada elemento vira um argv, então caminho com espaço funciona sem escaping:
 
 ```bash
@@ -71,29 +82,85 @@ WSL.
 
 ### Plataforma agêntica (`AGENT_PR_REVIEW_PLATFORM_CMD`)
 
-Mesma ideia, agora para o que é invocado quando a CI passa e a PR é encontrada. Cada elemento aceita
-os placeholders `{pr_url}` e `{repo}`:
+O que roda quando a CI passa e a PR é encontrada — **direto no processo do poller** (já em
+background, sem janela nenhuma), com `cwd` no repositório que fez o push, não em
+`AGENT_PR_REVIEW_SKILL_PATH`. Cada elemento aceita os placeholders `{pr_url}` e `{repo}`:
 
 ```bash
-# default: Claude Code + skill review-pr
-AGENT_PR_REVIEW_PLATFORM_CMD=(claude '/review-pr faça revisão da pr aberta em {pr_url} e submeta os comentarios e relatório da validação')
+# default: Claude Code, sessão nova (-p), sem skill fixa
+AGENT_PR_REVIEW_PLATFORM_CMD=(
+  claude -p
+  'Contexto: execução automática, não-interativa, disparada porque a CI passou na PR {pr_url} do repositório {repo}. Não há usuário observando esta sessão — não peça confirmação nem espere aprovação, publique diretamente. Primeiro, veja a descrição atual da PR (gh pr view {pr_url} --json body) e, se estiver vazia ou não refletir o que foi feito, gere uma nova a partir de git log/git diff da branch atual e grave com gh pr edit {pr_url} --body-file -. Depois, revise o código desta PR (use a skill /review-pr se este projeto tiver uma instalada; senão, revise você mesmo o diff) e publique os comentários/relatório diretamente, sem esperar aprovação.'
+  --permission-mode dontAsk
+  --allowedTools
+  'Bash(gh pr view *)'
+  'Bash(gh pr diff *)'
+  'Bash(gh pr edit *)'
+  'Bash(gh pr comment *)'
+  'Bash(gh pr review *)'
+  'Bash(git log *)'
+  'Bash(git diff *)'
+  'Bash(git show *)'
+  'Bash(git status *)'
+  Read
+  Glob
+  Grep
+)
 
-# Devin CLI — "devin -p" confirmado em docs.devin.ai/pt-BR/cli/essential-commands (single-turn).
-# Não há subcomando dedicado de review documentado; a revisão sai do prompt livre.
-# AGENT_PR_REVIEW_PLATFORM_CMD=(devin -p "revise a PR aberta em {pr_url} do repositório {repo}")
+# Devin CLI — "devin -p" confirmado em docs.devin.ai/cli/essential-commands
+# (single-turn, imprime e sai; sem -c/-r fica stateless). Sem allowlist
+# granular documentada — só existe bypass total (ver aviso abaixo). Sem
+# subcomando/skill de review documentado; a revisão sai do prompt livre.
+AGENT_PR_REVIEW_PLATFORM_CMD=(
+  devin -p
+  'Contexto: execução automática, não-interativa, disparada porque a CI passou na PR {pr_url} do repositório {repo}. Não há usuário observando esta sessão — não peça confirmação nem espere aprovação, publique diretamente. Primeiro, veja a descrição atual da PR (gh pr view {pr_url} --json body) e, se estiver vazia ou não refletir o que foi feito, gere uma nova a partir de git log/git diff da branch atual e grave com gh pr edit {pr_url} --body-file -. Depois, revise o código desta PR a partir do diff (gh pr diff {pr_url}) e publique os comentários/relatório via gh pr review/gh pr comment diretamente, sem esperar aprovação.'
+  --permission-mode bypass
+)
 ```
+
+> **Risco (Devin CLI)**: a documentação do Devin CLI não lista nenhum equivalente a
+> `--allowedTools` — a única forma confirmada de rodar `gh`/`git` sem prompt de aprovação é
+> `--permission-mode bypass`, que libera **qualquer** comando, não só os necessários pra
+> descrição+revisão. É uma superfície de risco maior que o default de Claude Code acima (allowlist
+> granular). Não confirmado nesta sessão rodando o binário de verdade — só via
+> [docs.devin.ai/cli/essential-commands](https://docs.devin.ai/cli/essential-commands); valide o
+> comportamento real antes de habilitar em produção.
 
 A linha final é sempre prefixada com `MSYS_NO_PATHCONV=1` (senão o Git Bash converte argumentos
 começados com `/`, como `/review-pr`, em caminho Windows) e cada elemento é escapado com
 `printf '%q'` — prompt com espaço, aspas ou acento funciona sem escaping manual.
+
+**Sessão sempre nova**: o default usa `claude -p` sem `--continue`/`--resume` — cada push dispara
+uma sessão stateless, sem herdar contexto de pushes anteriores na mesma branch (recuperar "o que foi
+feito" é papel do prompt pedir `git log`/`git diff` no `cwd` do push, não de retomar uma sessão de
+chat). **Nunca acrescente `--continue`/`--resume` a este comando.**
+
+**Permissão sem trava**: não há terminal pra responder um prompt de permissão em `claude -p`, então o
+default usa `--permission-mode dontAsk` + `--allowedTools` com uma allowlist — só os comandos
+`gh`/`git`/leitura listados rodam sem prompt; qualquer coisa fora da lista é **negada
+automaticamente** (não trava o poller). Ajuste a lista conforme o que a skill/comando do seu
+repositório realmente precisa rodar. Evite `--dangerously-skip-permissions`: libera qualquer
+ferramenta sem checagem nenhuma, incluindo o que um prompt malicioso ou um bug no texto poderia fazer
+rodar no repositório. Confira a sintaxe exata dessas flags com `claude --help` — pode mudar entre
+versões.
+
+**Skill de revisão por repositório**: a automação não instala nem exige nenhuma skill. O default
+sugere `/review-pr` só se o projeto tiver essa skill instalada localmente (`.claude/skills/`); cada
+repositório é livre pra usar outra skill, ou nenhuma (o prompt já cobre "revise você mesmo o diff"
+como alternativa), ou até o comando nativo de outra plataforma agêntica.
+
+**Onde o comando precisa estar no PATH**: como agora roda dentro do mesmo shell do poller (WSL2 ou
+Git Bash — o que `detect_environment()` identificou), não mais dentro de uma janela nova de Git Bash
+nativo, o binário configurado aqui (`claude`, `devin`, etc.) precisa estar no PATH **desse ambiente**,
+não só no Git Bash nativo do Windows.
 
 ### Gate de revisões (`AGENT_PR_REVIEW_MAX_PER_BRANCH`)
 
 Impede que uma branch com muitos pushes dispare a mesma revisão repetidas vezes. Cada revisão
 efetivamente invocada vira uma linha em `data/reviews.db` (SQLite, via
 [`hooks/review-db.py`](hooks/review-db.py)) associada ao par (repositório, branch); a contagem é
-conferida antes de abrir a janela. Acima do limite, a automação só registra "revisão não iniciada" e
-sai, sem consumir mais nada.
+conferida antes de rodar `AGENT_PR_REVIEW_PLATFORM_CMD`. Acima do limite, a automação só registra
+"revisão não iniciada" e sai, sem consumir mais nada.
 
 A checagem e a gravação são atômicas (`BEGIN IMMEDIATE`): dois pushes rápidos na mesma branch, ou
 dois pollers em paralelo, não perdem contagem nem estouram o limite.
@@ -152,10 +219,16 @@ entrypoint retorna em ~44ms e o poller segue rodando.
 ## Limites conhecidos
 
 - Só reage a branch `feature/*`.
-- A janela final abre em `AGENT_PR_REVIEW_SKILL_PATH`, nunca no repositório onde o push aconteceu.
+- `AGENT_PR_REVIEW_PLATFORM_CMD` roda com `cwd` no repositório do push; a janela de alerta (quando
+  esse comando falha) ou informativa (falha/timeout/sem PR) abre em `AGENT_PR_REVIEW_SKILL_PATH`.
+- O binário configurado em `AGENT_PR_REVIEW_PLATFORM_CMD` precisa estar no PATH do ambiente onde o
+  poller roda (WSL2 ou Git Bash) — não é mais aberto dentro de uma janela nova de Git Bash nativo.
 - Sem `gh` no PATH o poller aborta antes de começar (registrado no log da branch).
 - Nenhum check-run encontrado até o fim das tentativas vira `timeout`, não erro — repositório sem CI
   simplesmente nunca abre revisão automática.
+- No Devin CLI não há allowlist granular de permissão documentada (nada equivalente a
+  `--allowedTools`) — só bypass total (`--permission-mode bypass`), mais arriscado que o default de
+  Claude Code. Ver "Plataforma agêntica" acima.
 
 ## Estrutura
 

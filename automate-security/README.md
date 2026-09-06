@@ -34,8 +34,10 @@ assumem `$HOME/development/tools/`).
 
 - Payload por stdin em JSON, mesmo campo `tool_input.command` nas duas plataformas.
 - Bloqueio por exit code 2 num hook `PreToolUse`, igual nas duas.
-- Matcher: `"Bash"` no Claude Code, `"exec"` no Devin. Os dois filtram por nome de ferramenta; cada
-  guard decide sozinho se bloqueia, então não precisa de filtro por conteúdo.
+- Matcher: `"Bash|PowerShell"` no Claude Code (os dois guards cobrem os dois shells — um comando de
+  exfiltração de credencial rodado via PowerShell precisa ser barrado igual a um rodado via Bash),
+  `"exec"` no Devin (já cobre qualquer shell, matcher único por nome de ferramenta). Cada guard
+  decide sozinho se bloqueia, então não precisa de filtro por conteúdo.
 - Leitura do comando: `jq` → `python3` → regex. Só a última camada é aproximada, e mesmo ela trata
   `\"`/`\\` — o Git for Windows não traz `jq`, e sem esse cuidado o comando era truncado na primeira
   aspa escapada e o guard deixava passar.

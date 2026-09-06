@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Poller pesado: resolve contexto via git/gh, faz long-polling dos check-runs
-# do commit, classifica o resultado em 3 estados finais, e abre a janela final
-# correspondente. Disparado em background por post-push-review.sh — nunca
-# rodado diretamente pelo hook. Vive em ~/development/tools/automate-review/hooks/,
-# fora de qualquer repositório. A janela final abre sempre em $skill_path (Git
-# Bash nativo), não no repositório onde o push aconteceu — ver open-terminal.sh.
+# do commit, classifica o resultado em 3 estados finais, e reage de acordo.
+# Disparado em background por post-push-review.sh — nunca rodado diretamente
+# pelo hook. Vive em ~/development/tools/automate-review/hooks/, fora de
+# qualquer repositório.
+#
+# No estado "success" com PR aberta, o comando de AGENT_PR_REVIEW_PLATFORM_CMD
+# roda DIRETO neste processo (já em background), com cwd no repositório que
+# fez o push ($cwd) — sem abrir janela nenhuma. Só abre janela (em $skill_path,
+# Git Bash nativo) se esse comando falhar, ou nos demais estados
+# (failure/timeout/success sem PR) — ver open-terminal.sh.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -145,6 +150,31 @@ if [ "$state" = "success" ] && [ -n "$pr_url" ]; then
   fi
 fi
 
+# Caminho feliz: roda o comando da plataforma agêntica DIRETO neste processo
+# (sem janela nova) — não há fronteira de ambiente pra cruzar, já estamos no
+# mesmo shell (WSL2 ou Git Bash) que resolveu $cwd/$log_file, então nenhuma
+# tradução de caminho (to_native_path) é necessária aqui. cwd fica no
+# repositório que fez o push, não em $skill_path — cada repositório escolhe
+# sua própria skill/comando de revisão via AGENT_PR_REVIEW_PLATFORM_CMD.
+platform_status=""
+if [ "$state" = "success" ] && [ -n "$pr_url" ]; then
+  platform_cmd_line="$(render_platform_cmd_line "$pr_url" "$repo")"
+  log "Rodando comando da plataforma agêntica diretamente (sem abrir janela)."
+  ( cd "$cwd" && eval "$platform_cmd_line" ) >>"$log_file" 2>&1
+  platform_status=$?
+
+  if [ "$platform_status" -eq 0 ]; then
+    log "Comando da plataforma agêntica concluiu com sucesso."
+    trace_log "$repo" "$branch" "review_platform_completed" "pr=$pr_url"
+    exit 0
+  fi
+
+  log "ERRO: comando da plataforma agêntica falhou (exit=$platform_status) — abrindo janela para chamar atenção."
+  trace_log "$repo" "$branch" "review_platform_failed" "exit=$platform_status pr=$pr_url"
+fi
+
+# A partir daqui só sobram os casos que precisam de uma janela: falha/timeout
+# de CI, sucesso sem PR encontrada ainda, ou o comando acima ter falhado.
 final_script="$(dirname "$log_file")/.pr-review-final-${feature_name//\//-}.sh"
 
 # O final_script roda como ARQUIVO dentro do Git Bash nativo do Windows (não
@@ -171,10 +201,13 @@ log_file_native="$(to_native_path "$environment" "$log_file")" || {
   case "$state" in
     success)
       if [ -n "$pr_url" ]; then
-        emit_script_line echo "✅ CI passou para a branch $branch — abrindo revisão de PR."
-        # Plataforma/prompt configurável via AGENT_PR_REVIEW_PLATFORM_CMD
-        # (default: Claude Code + skill review-pr) — ver lib.sh.
-        printf '%s\n' "$(render_platform_cmd_line "$pr_url" "$repo")"
+        # Só chega aqui se o comando direto acima (AGENT_PR_REVIEW_PLATFORM_CMD)
+        # tiver falhado — o caso de sucesso já deu exit 0 sem abrir janela.
+        emit_script_line echo "⚠️  O comando de revisão automatizada falhou para a branch $branch (exit=$platform_status)."
+        emit_script_line echo "Repositório: $repo"
+        emit_script_line echo "PR: $pr_url"
+        emit_script_line echo "Veja o log acima para o erro completo. Rode o comando manualmente ou ajuste AGENT_PR_REVIEW_PLATFORM_CMD."
+        printf 'exec bash\n'
       else
         emit_script_line echo "✅ CI passou para a branch $branch, mas nenhuma PR foi encontrada ainda para invocar a revisão."
         emit_script_line echo "Abra a PR e rode a skill review-pr manualmente quando estiver pronta."

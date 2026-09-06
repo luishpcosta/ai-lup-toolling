@@ -7,7 +7,7 @@ Devin CLI). Cada subpasta é uma ferramenta independente, instalável em qualque
 
 | Ferramenta | O que faz | Padrão |
 |---|---|---|
-| [`automate-review/`](./automate-review) | Detecta `git push` numa branch `feature/*`, acompanha a CI em segundo plano e abre uma janela com o resultado, já invocando a skill de review quando a CI passa | **desligada** |
+| [`automate-review/`](./automate-review) | Detecta `git push` numa branch `feature/*`, acompanha a CI em segundo plano e, quando passa, roda `claude -p` (ou o comando configurado) direto em background para popular a descrição da PR e revisar o código — só abre janela em caso de falha | **desligada** |
 | [`automate-security/`](./automate-security) | Guards `PreToolUse` que bloqueiam caça/exfiltração de credencial e conexão direta com banco remoto. Portados de [`yurukusa/cc-safe-setup`](https://github.com/yurukusa/cc-safe-setup) | ligada |
 | [`automate-resource-guards/`](./automate-resource-guards) | Guard `PreToolUse` de orçamento: limite de subagentes em paralelo. Mesmo mecanismo dos guards de segurança, categoria própria porque o risco não é segurança | ligada |
 | [`automate-session-lifecycle/`](./automate-session-lifecycle) | Hooks sem bloqueio: checkpoint git na compactação de contexto, espera de warmup do MCP no início da sessão | ligada |
